@@ -1,0 +1,69 @@
+# Logs
+logs
+*.log
+
+# Runtime data
+pids
+*.pid
+*.seed
+
+# Coverage directory used by tools like istanbul
+coverage
+.eslintcache
+
+# Dependency directory
+# https://www.npmjs.org/doc/misc/npm-faq.html#should-i-check-my-node_modules-folder-into-git
+node_modules
+
+# OSX
+.DS_Store
+
+release/app/dist
+release/build
+configs/dll
+
+.idea
+npm-debug.log.*
+*.css.d.ts
+*.sass.d.ts
+*.scss.d.ts
+
+*.pyc
+**/__pycache__
+.vscode
+**/build/**
+**/dist/**
+*.class
+**/.svghmithumbs/**
+**/my_*.der
+**/my_*.pem
+tests/tools/Docker/requirements.txt
+**/management.json
+**/.secret
+
+doc/_build/**
+doc/locale/**
+
+C_runtime/**/*.d
+C_runtime/**/*.o
+
+resources/st-compiler/**.spec
+
+# External tool binaries (downloaded by scripts/download-binaries.ts)
+# arduino-cli stays committed since we don't own its releases
+resources/bin/**/xml2st
+resources/bin/**/xml2st.exe
+resources/bin/**/xml2st/
+resources/bin/**/iec2c
+resources/bin/**/iec2c.exe
+resources/bin/**/iec2iec
+resources/bin/**/iec2iec.exe
+resources/bin/.binary-metadata.json
+resources/bin/**/.binary-metadata.json
+resources/sources/MatIEC/lib/
+
+# Playwright
+/test-results/
+playwright-report
+/blob-report/
+/playwright/.cache/

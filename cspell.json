@@ -1,0 +1,32 @@
+{
+    "version": "0.2",
+    "ignorePaths": [],
+    "dictionaryDefinitions": [],
+    "dictionaries": [],
+    "words": [
+        "ARDUINOCAN",
+        "baremetal",
+        "baudrate",
+        "CODESYS",
+        "loglevel",
+        "lreal",
+        "lword",
+        "MBSERIAL",
+        "MBTCP",
+        "modbus",
+        "MOSFET",
+        "openplc",
+        "PINMASK",
+        "pous",
+        "prefault",
+        "sublabel",
+        "tailwindcss",
+        "TXPIN",
+        "udint",
+        "ulint",
+        "usint",
+        "uuidv"
+    ],
+    "ignoreWords": [],
+    "import": []
+}
