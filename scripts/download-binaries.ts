@@ -104,9 +104,7 @@ function needsXml2st(versions: BinaryVersions, cached: CacheMetadata | null, pla
   const isWindows = platform === 'win32'
   const isDarwin = platform === 'darwin'
 
-  const xml2stPath = isDarwin
-    ? path.join(dir, 'xml2st', 'xml2st')
-    : path.join(dir, isWindows ? 'xml2st.exe' : 'xml2st')
+  const xml2stPath = isDarwin ? path.join(dir, 'xml2st', 'xml2st') : path.join(dir, isWindows ? 'xml2st.exe' : 'xml2st')
 
   if (!fs.existsSync(xml2stPath)) return true
   if (!cached || cached.xml2st !== versions.xml2st.version) return true
@@ -135,6 +133,24 @@ function writeCache(versions: BinaryVersions, platform: Platform, arch: Arch): v
   }
   fs.mkdirSync(path.dirname(cacheFile(platform, arch)), { recursive: true })
   fs.writeFileSync(cacheFile(platform, arch), JSON.stringify(data, null, 2) + '\n')
+}
+
+function chmodIfExists(filePath: string): void {
+  if (fs.existsSync(filePath)) {
+    fs.chmodSync(filePath, 0o755)
+  }
+}
+
+function ensureExecutablePermissions(platform: Platform, arch: Arch): void {
+  if (platform === 'win32') return
+
+  const dir = binDir(platform, arch)
+
+  chmodIfExists(path.join(dir, 'arduino-cli'))
+  chmodIfExists(path.join(dir, 'iec2c'))
+  chmodIfExists(path.join(dir, 'iec2iec'))
+  chmodIfExists(path.join(dir, 'xml2st'))
+  chmodIfExists(path.join(dir, 'xml2st', 'xml2st'))
 }
 
 // ---------------------------------------------------------------------------
@@ -187,12 +203,7 @@ function copyRecursive(src: string, dest: string): void {
 // xml2st download and extraction
 // ---------------------------------------------------------------------------
 
-async function downloadXml2st(
-  tool: ToolEntry,
-  platform: Platform,
-  arch: Arch,
-  targetBinDir: string,
-): Promise<void> {
+async function downloadXml2st(tool: ToolEntry, platform: Platform, arch: Arch, targetBinDir: string): Promise<void> {
   const isWindows = platform === 'win32'
   const isDarwin = platform === 'darwin'
   const ext = isWindows ? 'zip' : 'tar.gz'
@@ -245,12 +256,7 @@ async function downloadXml2st(
 // matiec download and extraction
 // ---------------------------------------------------------------------------
 
-async function downloadMatiec(
-  tool: ToolEntry,
-  platform: Platform,
-  arch: Arch,
-  targetBinDir: string,
-): Promise<void> {
+async function downloadMatiec(tool: ToolEntry, platform: Platform, arch: Arch, targetBinDir: string): Promise<void> {
   const isWindows = platform === 'win32'
   const ext = isWindows ? 'zip' : 'tar.gz'
   const url = `https://github.com/${tool.repository}/releases/download/${tool.version}/matiec-${platform}-${arch}.${ext}`
@@ -329,6 +335,7 @@ async function main(): Promise<void> {
   const downloadMatiecNeeded = force || needsMatiec(versions, cached, platform, arch)
 
   if (!downloadXml2stNeeded && !downloadMatiecNeeded) {
+    ensureExecutablePermissions(platform, arch)
     console.log(`[download-binaries] Binaries up to date for ${platform}-${arch}, skipping.`)
     return
   }
@@ -346,6 +353,7 @@ async function main(): Promise<void> {
   }
 
   writeCache(versions, platform, arch)
+  ensureExecutablePermissions(platform, arch)
   console.log(`[download-binaries] Done.`)
 }
 
