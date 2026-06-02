@@ -1,5 +1,5 @@
+import { getResourcesPath, getUserDataPath } from '@root/shared/platform/paths'
 import { exec } from 'child_process'
-import { app } from 'electron'
 import { access, constants, mkdir, rename, rm, writeFile } from 'fs/promises'
 import { basename, join } from 'path'
 import { promisify } from 'util'
@@ -116,7 +116,7 @@ class UserService {
    * @returns {Promise<void>} Resolves when the user base settings folder and file are ready.
    */
   async #checkIfUserBaseSettingsExists(): Promise<void> {
-    const pathToUserDataFolder = join(app.getPath('userData'), 'User')
+    const pathToUserDataFolder = join(getUserDataPath(), 'User')
     const pathToUserDataFile = join(pathToUserDataFolder, 'settings.json')
 
     await UserService.createDirectoryIfNotExists(pathToUserDataFolder)
@@ -124,7 +124,7 @@ class UserService {
   }
 
   async #checkIfLogFolderExists(): Promise<void> {
-    const pathToLogFolder = join(app.getPath('userData'), 'logs')
+    const pathToLogFolder = join(getUserDataPath(), 'logs')
     await UserService.createDirectoryIfNotExists(pathToLogFolder)
   }
 
@@ -135,7 +135,7 @@ class UserService {
    * @returns {Promise<void>} Resolves when the user history folder and file are ready.
    */
   async #checkIfUserHistoryFolderExists(): Promise<void> {
-    const pathToUserHistoryFolder = join(app.getPath('userData'), 'User', 'History')
+    const pathToUserHistoryFolder = join(getUserDataPath(), 'User', 'History')
     const pathToUserProjectInfoFile = join(pathToUserHistoryFolder, 'projects.json')
     const pathToUserLibraryInfoFile = join(pathToUserHistoryFolder, 'libraries.json')
 
@@ -148,7 +148,7 @@ class UserService {
    * Checks if the Arduino CLI configuration file exists and creates it if it doesn't.
    */
   async #checkIfArduinoCliConfigExists(): Promise<void> {
-    const pathToArduinoCliConfig = join(app.getPath('userData'), 'User', 'arduino-cli.yaml')
+    const pathToArduinoCliConfig = join(getUserDataPath(), 'User', 'arduino-cli.yaml')
     try {
       await writeFile(pathToArduinoCliConfig, UserService.ARDUINO_FILE_CONTENT, { flag: 'wx' })
     } catch (err) {
@@ -164,18 +164,11 @@ class UserService {
   }
 
   async #executeArduinoCliCommand(command: string): Promise<{ stderr: string; stdout: string }> {
-    const developmentMode = process.env.NODE_ENV === 'development'
     const executeCommand = promisify(exec)
 
     const platformSpecificBinaryPath = join(process.platform, process.arch)
 
-    let binaryPath = join(
-      developmentMode ? process.cwd() : process.resourcesPath,
-      developmentMode ? 'resources' : '',
-      'bin',
-      developmentMode ? platformSpecificBinaryPath : '',
-      'arduino-cli',
-    )
+    let binaryPath = join(getResourcesPath(), 'bin', platformSpecificBinaryPath, 'arduino-cli')
 
     if (process.platform === 'win32') {
       binaryPath = `${binaryPath}.exe`
@@ -191,7 +184,7 @@ class UserService {
    */
 
   async #checkIfArduinoCoreControlFileExists(): Promise<void> {
-    const pathToRuntimeFolder = join(app.getPath('userData'), 'User', 'Runtime')
+    const pathToRuntimeFolder = join(getUserDataPath(), 'User', 'Runtime')
     const pathToArduinoCoreControlFile = join(pathToRuntimeFolder, 'arduino-core-control.json')
 
     const { stderr, stdout } = await this.#executeArduinoCliCommand('core list --json')
@@ -215,7 +208,7 @@ class UserService {
   }
 
   async #checkIfArduinoLibraryControlFileExists() {
-    const pathToRuntimeFolder = join(app.getPath('userData'), 'User', 'Runtime')
+    const pathToRuntimeFolder = join(getUserDataPath(), 'User', 'Runtime')
     const pathToArduinoLibraryControlFile = join(pathToRuntimeFolder, 'arduino-library-control.json')
 
     const { stderr, stdout } = await this.#executeArduinoCliCommand('lib list --json')

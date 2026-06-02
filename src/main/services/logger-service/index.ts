@@ -1,6 +1,7 @@
-import { app } from 'electron'
 import { join } from 'path'
 import { createLogger, format, transports } from 'winston'
+
+import { logPath } from './paths'
 
 const { combine, colorize, timestamp, label, printf } = format
 
@@ -11,8 +12,6 @@ const timestampFormatter = () => new Date().toLocaleString('en-US', { timeZone: 
 const autonomyLoggerFormat = printf(({ level, message, label, timestamp }) => {
   return `${timestamp as string} [${label as string}] ${level}: ${message as string}`
 })
-
-const logPath = join(app.getPath('userData'), 'logs')
 
 const logger = createLogger({
   level: 'info',

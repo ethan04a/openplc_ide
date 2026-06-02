@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 
-import { app as electronApp } from 'electron'
+import { getResourcesPath, getUserDataPath } from '@root/shared/platform/paths'
 import { produce } from 'immer'
 
 import type { AvailableBoards, HalsFile, SerialPort } from './hardware-types'
@@ -34,7 +34,7 @@ class HardwareModule {
     this.sourcesDirectoryPath = this.#constructSourceDirectoryPath()
 
     this.arduinoCliBinaryPath = this.#constructArduinoCliBinaryPath()
-    this.arduinoCliConfigurationFilePath = join(electronApp.getPath('userData'), 'User', 'arduino-cli.yaml')
+    this.arduinoCliConfigurationFilePath = join(getUserDataPath(), 'User', 'arduino-cli.yaml')
     // INFO: We use this approach because some commands can receive additional parameters as a string array.
     this.arduinoCliBaseParameters = ['--config-file', this.arduinoCliConfigurationFilePath]
     this.arduinoCoreFilePath = this.#constructArduinoCoreFilePath()
@@ -58,7 +58,7 @@ class HardwareModule {
     if (HardwareModule.HOST_ARCHITECTURE !== 'x64' && HardwareModule.HOST_ARCHITECTURE !== 'arm64') return ''
     const platformSpecificPath = join(HardwareModule.HOST_PLATFORM, HardwareModule.HOST_ARCHITECTURE)
     return join(
-      HardwareModule.DEVELOPMENT_MODE ? process.cwd() : process.resourcesPath,
+      HardwareModule.DEVELOPMENT_MODE ? process.cwd() : getResourcesPath(),
       HardwareModule.DEVELOPMENT_MODE ? 'resources' : '',
       'bin',
       HardwareModule.DEVELOPMENT_MODE ? platformSpecificPath : '',
@@ -67,7 +67,7 @@ class HardwareModule {
 
   #constructSourceDirectoryPath(): string {
     return join(
-      HardwareModule.DEVELOPMENT_MODE ? process.cwd() : process.resourcesPath,
+      HardwareModule.DEVELOPMENT_MODE ? process.cwd() : getResourcesPath(),
       HardwareModule.DEVELOPMENT_MODE ? 'resources' : '',
       'sources',
     )
@@ -79,7 +79,7 @@ class HardwareModule {
   }
 
   #constructArduinoCoreFilePath(): string {
-    return join(electronApp.getPath('userData'), 'User', 'Runtime', 'arduino-core-control.json')
+    return join(getUserDataPath(), 'User', 'Runtime', 'arduino-core-control.json')
   }
 
   // ############################################################################

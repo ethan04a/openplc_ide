@@ -1,8 +1,12 @@
 import '@utils/i18n'
 
+import { bridge, initWebBridge } from '@root/platform'
 import { createRoot } from 'react-dom/client'
 
 import App from './App'
+
+initWebBridge()
+window.bridge = bridge
 
 /**
  * Retrieves the root element with the id 'root' from the document.

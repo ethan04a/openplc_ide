@@ -13,7 +13,7 @@
     "allowSyntheticDefaultImports": true,
     "resolveJsonModule": true,
     "allowJs": true,
-    "outDir": "configs/dll",
+    "outDir": "dist",
     "paths": {
       "@root/*": ["./src/*"],
       "@process:main/*": ["./src/main/*"],
@@ -28,5 +28,5 @@
       "@data/*": ["./src/renderer/data/*"]
     }
   },
-  "exclude": ["test", "release/build", "release/app/dist", "configs/dll"]
+  "exclude": ["test", "release/build", "release/app/dist", "dist"]
 }

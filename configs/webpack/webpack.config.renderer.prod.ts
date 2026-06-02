@@ -1,5 +1,5 @@
 /**
- * Build config for electron renderer process
+ * Build config for the web renderer process
  */
 
 import autoprefixer from 'autoprefixer'
@@ -17,7 +17,7 @@ import { merge } from 'webpack-merge'
 import checkNodeEnv from '../../scripts/check-node-env'
 import deleteSourceMaps from '../../scripts/delete-source-maps'
 import { getAppInfoDefines } from './webpack.app-info'
-import baseConfig from './webpack.config.base'
+import baseConfig from './webpack.config.renderer.base'
 import webpackPaths from './webpack.paths'
 
 checkNodeEnv('production')
@@ -28,7 +28,7 @@ const configuration: webpack.Configuration = {
 
   mode: 'production',
 
-  target: ['web', 'electron-renderer'],
+  target: 'web',
 
   entry: [join(webpackPaths.srcRendererPath, 'index.tsx')],
 

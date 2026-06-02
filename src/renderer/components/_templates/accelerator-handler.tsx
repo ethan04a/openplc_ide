@@ -26,7 +26,7 @@ const AcceleratorHandler = () => {
     project,
     editor: { meta },
     deviceDefinitions,
-    workspace: { editingState, systemConfigs, close },
+    workspace: { editingState },
     modalActions: { openModal },
     sharedWorkspaceActions: { closeProject, openProject, openRecentProject, saveFile, saveProject, closeFile },
     workspaceActions: { switchAppTheme, toggleMaximizedWindow },
@@ -341,26 +341,10 @@ const AcceleratorHandler = () => {
    * This event is fired after the mainWindow (electron) close event
    */
   window.onbeforeunload = (e) => {
-    // When page is reloaded, the beforeunload event is fired, so we need to prevent the default behavior
-    if (process.env.NODE_ENV !== 'production') {
-      return
+    if (editingState === 'unsaved') {
+      e.preventDefault()
+      e.returnValue = ''
     }
-
-    if (!close.window) {
-      e.returnValue = false
-      return
-    }
-
-    if (close.app) return
-
-    if (systemConfigs.OS === 'darwin' && !close.appDarwin) {
-      window.bridge.hideWindow()
-      e.returnValue = false
-      return
-    }
-
-    quitAppRequest(editingState === 'unsaved', openModal)
-    e.returnValue = false
   }
 
   return <></>

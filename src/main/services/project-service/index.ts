@@ -1,4 +1,6 @@
 import { fileOrDirectoryExists } from '@root/main/utils'
+import { pickNativeFolder } from '@root/main/utils/native-folder-picker'
+import { getUserDataPath } from '@root/shared/platform/paths'
 import {
   CreateProjectFileProps,
   IProjectRecentHistoryEntry,
@@ -7,7 +9,6 @@ import {
 import { DeviceConfiguration, DevicePin } from '@root/types/PLC/devices'
 import { getExtensionFromLanguage } from '@root/utils/PLC/pou-file-extensions'
 import { serializePouToText } from '@root/utils/PLC/pou-text-serializer'
-import { app, BrowserWindow, dialog } from 'electron'
 import { promises } from 'fs'
 import { dirname, join, normalize } from 'path'
 
@@ -16,10 +17,8 @@ import { i18n } from '../../../utils/i18n'
 import { createProjectDefaultStructure, readProjectFiles } from './utils'
 
 class ProjectService {
-  constructor(private serviceManager: InstanceType<typeof BrowserWindow>) {}
-
   public getHistoryProjectsFilePath(): string {
-    const pathToUserDataFolder = join(app.getPath('userData'), 'User')
+    const pathToUserDataFolder = join(getUserDataPath(), 'User')
     const pathToUserHistoryFolder = join(pathToUserDataFolder, 'History')
 
     return join(pathToUserHistoryFolder, 'projects.json')
@@ -172,12 +171,11 @@ class ProjectService {
   }
 
   async openProject(): Promise<IProjectServiceResponse> {
-    const { canceled, filePaths } = await dialog.showOpenDialog(this.serviceManager, {
+    const directoryPath = await pickNativeFolder({
       title: i18n.t('openProject:dialog.title'),
-      properties: ['openDirectory'],
     })
 
-    if (canceled) {
+    if (!directoryPath) {
       return {
         success: false,
         error: {
@@ -187,8 +185,6 @@ class ProjectService {
         },
       }
     }
-
-    const [directoryPath] = filePaths
 
     try {
       await promises.access(directoryPath)
@@ -222,7 +218,7 @@ class ProjectService {
         },
       }
     } catch (error) {
-      console.error(`Error accessing project directory: ${filePaths[0]}`, error)
+      console.error(`Error accessing project directory: ${directoryPath}`, error)
       await this.removeProjectFromHistory(directoryPath)
 
       return {

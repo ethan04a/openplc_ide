@@ -15,7 +15,7 @@ export default [
       '**/*.test.{js,jsx,ts,tsx}',
       '**/*.spec.{js,jsx,ts,tsx}',
       '**/*.config.{js,ts,mjs,cjs}',
-      'configs/dll/**/*.{js,ts,jsx,tsx}',
+      'dist/**/*.{js,ts,jsx,tsx}',
       '**/scripts/**',
       '**/build/**',
       '**/public/**',

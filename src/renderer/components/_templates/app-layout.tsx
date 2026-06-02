@@ -3,10 +3,8 @@ import {
   SaveChangeModalProps,
   SaveChangesFileModalData,
 } from '@root/renderer/components/_organisms/modals'
-import { TitleBar } from '@root/renderer/components/_organisms/title-bar'
 import { useOpenPLCStore } from '@root/renderer/store'
-import { cn } from '@root/utils'
-import { ComponentPropsWithoutRef, ReactNode, useEffect, useState } from 'react'
+import { ComponentPropsWithoutRef, ReactNode, useEffect } from 'react'
 
 import Toaster from '../_features/[app]/toast/toaster'
 import { ProjectModal } from '../_features/[start]/new-project/project-modal'
@@ -20,7 +18,6 @@ import { AcceleratorHandler } from './accelerator-handler'
 
 type AppLayoutProps = ComponentPropsWithoutRef<'main'>
 const AppLayout = ({ children, ...rest }: AppLayoutProps): ReactNode => {
-  const [isLinux, setIsLinux] = useState(true)
   const {
     modals,
     workspaceActions: { setSystemConfigs, setRecent },
@@ -38,23 +35,13 @@ const AppLayout = ({ children, ...rest }: AppLayoutProps): ReactNode => {
         shouldUseDarkMode: prefersDarkMode,
         isWindowMaximized,
       })
-      if (OS === 'darwin' || OS === 'win32') {
-        setIsLinux(false)
-      }
     }
     void getUserSystemProps()
-  }, [setSystemConfigs])
+  }, [setSystemConfigs, setRecent])
 
   return (
     <>
-      {!isLinux && <TitleBar />}
-      <main
-        className={cn(
-          'absolute bottom-0 left-0 right-0 flex overflow-hidden',
-          `${isLinux ? 'top-0' : 'top-[--oplc-title-bar-height]'}`,
-        )}
-        {...rest}
-      >
+      <main className='absolute inset-0 flex overflow-hidden' {...rest}>
         {children}
         <Toaster />
         {modals?.['create-project']?.open === true && <ProjectModal isOpen={modals['create-project'].open} />}

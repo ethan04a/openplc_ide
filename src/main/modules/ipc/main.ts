@@ -1,26 +1,40 @@
 import { getProjectPath } from '@root/main/utils'
+import { serverEventBus } from '@root/server/event-bus'
+import { WebSocketCompileStreamPort } from '@root/shared/platform/compile-stream-port'
+import { deserializeFromTransport, serializeForTransport } from '@root/shared/platform/json-serialization'
+import { getUserDataPath } from '@root/shared/platform/paths'
 import { CreatePouFileProps } from '@root/types/IPC/pou-service'
 import { CreateProjectFileProps } from '@root/types/IPC/project-service'
 import { DeviceConfiguration, DevicePin } from '@root/types/PLC/devices'
 import { RuntimeLogEntry } from '@root/types/PLC/runtime-logs'
 import { getRuntimeHttpsOptions } from '@root/utils/runtime-https-config'
-import type { IpcMainEvent, IpcMainInvokeEvent } from 'electron'
-import { app, nativeTheme, shell } from 'electron'
+import type { Express, Request, Response } from 'express'
 import { readFile, realpathSync, stat, statSync, unwatchFile, watchFile } from 'fs'
 import type { IncomingMessage } from 'http'
 import https from 'https'
 import { join, resolve, sep } from 'path'
 import { platform } from 'process'
+import type { WebSocket } from 'ws'
 
 import { ProjectState } from '../../../renderer/store/slices'
 import { PLCPou, PLCProject } from '../../../types/PLC/open-plc'
-import { MainIpcModule, MainIpcModuleConstructor } from '../../contracts/types/modules/ipc/main'
+import { store } from '../../modules/store'
 import { logger } from '../../services'
+import { PouService, ProjectService } from '../../services'
+import { CompilerModule } from '../compiler'
+import { HardwareModule } from '../hardware'
 import { ModbusTcpClient } from '../modbus/modbus-client'
 import { ModbusRtuClient } from '../modbus/modbus-rtu-client'
 import { SimulatorModule } from '../simulator/simulator-module'
 import { VirtualSerialPort } from '../simulator/virtual-serial-port'
 import { WebSocketDebugClient } from '../websocket/websocket-debug-client'
+
+export type ApiBridgeConstructor = {
+  projectService: ProjectService
+  pouService: PouService
+  compilerModule: CompilerModule
+  hardwareModule: HardwareModule
+}
 
 type IDataToWrite = {
   projectPath: string
@@ -32,15 +46,12 @@ type IDataToWrite = {
   }
 }
 
-class MainProcessBridge implements MainIpcModule {
-  ipcMain
-  mainWindow
+class ApiBridge {
   projectService
-  store
-  menuBuilder
   pouService
   compilerModule
   hardwareModule
+  store = store
   private debuggerModbusClient: ModbusTcpClient | ModbusRtuClient | null = null
   private debuggerWebSocketClient: WebSocketDebugClient | null = null
   private debuggerTargetIp: string | null = null
@@ -59,31 +70,22 @@ class MainProcessBridge implements MainIpcModule {
   // avr8js ATmega2560 emulator instance for the built-in simulator
   private simulatorModule = new SimulatorModule()
 
-  constructor({
-    ipcMain,
-    mainWindow,
-    projectService,
-    store,
-    menuBuilder,
-    pouService,
-    compilerModule,
-    hardwareModule,
-  }: MainIpcModuleConstructor) {
-    this.ipcMain = ipcMain
-    this.mainWindow = mainWindow
+  constructor({ projectService, pouService, compilerModule, hardwareModule }: ApiBridgeConstructor) {
     this.projectService = projectService
-    this.store = store
-    this.menuBuilder = menuBuilder
     this.pouService = pouService
     this.compilerModule = compilerModule
     this.hardwareModule = hardwareModule
+  }
+
+  private emitToRenderer(channel: string, ...args: unknown[]): void {
+    serverEventBus.emitEvent(channel, ...args)
   }
 
   // ===================== RUNTIME API HANDLERS =====================
   private readonly RUNTIME_API_PORT = 8443
   private readonly RUNTIME_CONNECTION_TIMEOUT_MS = 5000 // 5 seconds (important-comment)
 
-  handleRuntimeGetUsersInfo = async (_event: IpcMainInvokeEvent, ipAddress: string) => {
+  handleRuntimeGetUsersInfo = async (ipAddress: string) => {
     try {
       const url = `https://${ipAddress}:${this.RUNTIME_API_PORT}/api/get-users-info`
 
@@ -125,12 +127,7 @@ class MainProcessBridge implements MainIpcModule {
     }
   }
 
-  handleRuntimeCreateUser = async (
-    _event: IpcMainInvokeEvent,
-    ipAddress: string,
-    username: string,
-    password: string,
-  ) => {
+  handleRuntimeCreateUser = async (ipAddress: string, username: string, password: string) => {
     try {
       const postData = JSON.stringify({ username, password, role: 'user' })
 
@@ -231,7 +228,7 @@ class MainProcessBridge implements MainIpcModule {
     }
   }
 
-  handleRuntimeLogin = async (_event: IpcMainInvokeEvent, ipAddress: string, username: string, password: string) => {
+  handleRuntimeLogin = async (ipAddress: string, username: string, password: string) => {
     const result = await this.performAuthentication(ipAddress, username, password)
     if (result.success && result.accessToken) {
       this.runtimeCredentials = { ipAddress, username, password }
@@ -305,8 +302,8 @@ class MainProcessBridge implements MainIpcModule {
             } else if (this.isTokenExpiredError(res.statusCode, data)) {
               void this.attemptTokenRefresh().then((refreshResult) => {
                 if (refreshResult.success && refreshResult.accessToken) {
-                  if (this.mainWindow && this.mainWindow.webContents) {
-                    this.mainWindow.webContents.send('runtime:token-refreshed', refreshResult.accessToken)
+                  if (refreshResult.accessToken) {
+                    this.emitToRenderer('runtime:token-refreshed', refreshResult.accessToken)
                   }
                   const retryReq = https.get(
                     `https://${ipAddress}:${this.RUNTIME_API_PORT}${endpoint}`,
@@ -369,12 +366,7 @@ class MainProcessBridge implements MainIpcModule {
     })
   }
 
-  handleRuntimeGetStatus = async (
-    _event: IpcMainInvokeEvent,
-    ipAddress: string,
-    jwtToken: string,
-    includeStats?: boolean,
-  ) => {
+  handleRuntimeGetStatus = async (ipAddress: string, jwtToken: string, includeStats?: boolean) => {
     try {
       // Build the endpoint path with optional include_stats query parameter
       const endpoint = includeStats ? '/api/status?include_stats=true' : '/api/status'
@@ -428,7 +420,7 @@ class MainProcessBridge implements MainIpcModule {
     }
   }
 
-  handleRuntimeStartPlc = async (_event: IpcMainInvokeEvent, ipAddress: string, jwtToken: string) => {
+  handleRuntimeStartPlc = async (ipAddress: string, jwtToken: string) => {
     try {
       return await this.makeRuntimeApiRequest(ipAddress, jwtToken, '/api/start-plc')
     } catch (error) {
@@ -436,7 +428,7 @@ class MainProcessBridge implements MainIpcModule {
     }
   }
 
-  handleRuntimeStopPlc = async (_event: IpcMainInvokeEvent, ipAddress: string, jwtToken: string) => {
+  handleRuntimeStopPlc = async (ipAddress: string, jwtToken: string) => {
     try {
       return await this.makeRuntimeApiRequest(ipAddress, jwtToken, '/api/stop-plc')
     } catch (error) {
@@ -444,7 +436,7 @@ class MainProcessBridge implements MainIpcModule {
     }
   }
 
-  handleRuntimeGetCompilationStatus = async (_event: IpcMainInvokeEvent, ipAddress: string, jwtToken: string) => {
+  handleRuntimeGetCompilationStatus = async (ipAddress: string, jwtToken: string) => {
     try {
       const result = await this.makeRuntimeApiRequest<{ status: string; logs: string[]; exit_code: number | null }>(
         ipAddress,
@@ -461,7 +453,7 @@ class MainProcessBridge implements MainIpcModule {
     }
   }
 
-  handleRuntimeGetLogs = async (_event: IpcMainInvokeEvent, ipAddress: string, jwtToken: string, minId?: number) => {
+  handleRuntimeGetLogs = async (ipAddress: string, jwtToken: string, minId?: number) => {
     try {
       const endpoint = minId !== undefined ? `/api/runtime-logs?id=${minId}` : '/api/runtime-logs'
       const result = await this.makeRuntimeApiRequest<string | RuntimeLogEntry[]>(
@@ -483,13 +475,12 @@ class MainProcessBridge implements MainIpcModule {
     }
   }
 
-  handleRuntimeClearCredentials = (_event: IpcMainInvokeEvent) => {
+  handleRuntimeClearCredentials = () => {
     this.runtimeCredentials = null
     return { success: true }
   }
 
   handleRuntimeGetSerialPorts = async (
-    _event: IpcMainInvokeEvent,
     ipAddress: string,
     jwtToken: string,
   ): Promise<{ success: boolean; ports?: Array<{ device: string; description?: string }>; error?: string }> => {
@@ -519,101 +510,200 @@ class MainProcessBridge implements MainIpcModule {
     }
   }
 
-  // ===================== IPC HANDLER REGISTRATION =====================
-  setupMainIpcListener() {
-    // Project-related handlers
-    this.ipcMain.handle('project:create', this.handleProjectCreate)
-    this.ipcMain.handle('project:open', this.handleProjectOpen)
-    this.ipcMain.handle('project:path-picker', this.handleProjectPathPicker)
-    this.ipcMain.handle('project:save', this.handleProjectSave)
-    this.ipcMain.handle('project:save-file', this.handleFileSave)
-    this.ipcMain.handle('project:open-by-path', this.handleProjectOpenByPath)
+  registerHttpRoutes(app: Express): void {
+    app.post('/api/invoke/:channel', async (req: Request, res: Response) => {
+      try {
+        const channel = req.params.channel
+        const args = deserializeFromTransport(req.body?.args ?? []) as unknown[]
+        const result = await this.dispatchInvoke(channel, args)
+        res.json({ ok: true, result: serializeForTransport(result) })
+      } catch (error) {
+        res.status(500).json({
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+        })
+      }
+    })
 
-    // Pou-related handlers
-    this.ipcMain.handle('pou:create', this.handleCreatePouFile)
-    this.ipcMain.handle('pou:delete', this.handleDeletePouFile)
-    this.ipcMain.handle('pou:rename', this.handleRenamePouFile)
+    app.post('/api/send/:channel', (req: Request, res: Response) => {
+      try {
+        const channel = req.params.channel
+        const args = deserializeFromTransport(req.body?.args ?? []) as unknown[]
+        this.dispatchSend(channel, args)
+        res.json({ ok: true })
+      } catch (error) {
+        res.status(500).json({
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+        })
+      }
+    })
+  }
 
-    // App and system handlers
-    this.ipcMain.handle('open-external-link', this.handleOpenExternalLink)
-    this.ipcMain.handle('system:get-system-info', this.handleGetSystemInfo)
-    this.ipcMain.handle('app:store-retrieve-recent', this.handleStoreRetrieveRecent)
-    this.ipcMain.on('app:quit', this.handleAppQuit)
-    // this.ipcMain.on('app:reply-if-app-is-closing', (_, shouldQuit) => { ... })
+  handleWebSocketMessage = (socket: WebSocket, payload: { type: string; args?: unknown[] }): void => {
+    if (payload.type === 'compiler:run-compile-program') {
+      const streamPort = new WebSocketCompileStreamPort((data) => {
+        if (socket.readyState === socket.OPEN) {
+          socket.send(JSON.stringify({ type: 'compile-message', data: serializeForTransport(data) }))
+        }
+      })
+      void this.compilerModule.compileProgram(
+        deserializeFromTransport(payload.args ?? []) as Array<string | null | ProjectState['data']>,
+        streamPort,
+        this,
+      )
+      return
+    }
 
-    // Theme and store handlers
-    this.ipcMain.on('system:update-theme', this.mainIpcEventHandlers.handleUpdateTheme)
-    // this.ipcMain.handle('app:store-get', this.mainIpcEventHandlers.getStoreValue)
+    if (payload.type === 'compiler:run-debug-compilation') {
+      const streamPort = new WebSocketCompileStreamPort((data) => {
+        if (socket.readyState === socket.OPEN) {
+          socket.send(JSON.stringify({ type: 'compile-message', data: serializeForTransport(data) }))
+        }
+      })
+      void this.compilerModule.compileForDebugger(
+        deserializeFromTransport(payload.args ?? []) as Array<string | ProjectState['data']>,
+        streamPort,
+      )
+    }
+  }
 
-    // ===================== COMPILER SERVICE =====================
-    // TODO: This handle should be refactored to use MessagePortMain for better performance.
-    this.ipcMain.handle('compiler:export-project-xml', this.handleCompilerExportProjectXml)
-    this.ipcMain.on('compiler:run-compile-program', this.handleRunCompileProgram)
-    this.ipcMain.on('compiler:run-debug-compilation', this.handleRunDebugCompilation)
+  private async dispatchInvoke(channel: string, args: unknown[]): Promise<unknown> {
+    switch (channel) {
+      case 'project:create':
+        return this.handleProjectCreate(args[0] as CreateProjectFileProps)
+      case 'project:open':
+        return this.handleProjectOpen()
+      case 'project:path-picker':
+        return this.handleProjectPathPicker()
+      case 'project:save':
+        return this.handleProjectSave(args[0] as IDataToWrite)
+      case 'project:save-file':
+        return this.handleFileSave(args[0] as string, args[1])
+      case 'project:open-by-path':
+        return this.handleProjectOpenByPath(args[0] as string)
+      case 'pou:create':
+        return this.handleCreatePouFile(args[0] as CreatePouFileProps)
+      case 'pou:delete':
+        return this.handleDeletePouFile(args[0] as string)
+      case 'pou:rename':
+        return this.handleRenamePouFile(args[0] as { filePath: string; newFileName: string; fileContent?: unknown })
+      case 'open-external-link':
+        return this.handleOpenExternalLink(args[0] as string)
+      case 'system:get-system-info':
+        return this.handleGetSystemInfo()
+      case 'app:store-retrieve-recent':
+        return this.handleStoreRetrieveRecent()
+      case 'compiler:export-project-xml':
+        return this.handleCompilerExportProjectXml(
+          args[0] as string,
+          args[1] as ProjectState['data'],
+          args[2] as 'old-editor' | 'codesys',
+        )
+      case 'hardware:get-available-communication-ports':
+        return this.handleHardwareGetAvailableCommunicationPorts()
+      case 'hardware:get-available-boards':
+        return this.handleHardwareGetAvailableBoards()
+      case 'hardware:refresh-communication-ports':
+        return this.handleHardwareRefreshCommunicationPorts()
+      case 'hardware:refresh-available-boards':
+        return this.handleHardwareRefreshAvailableBoards()
+      case 'util:get-preview-image':
+        return this.handleUtilGetPreviewImage(args[0] as string)
+      case 'util:read-debug-file':
+        return this.handleReadDebugFile(args[0] as string, args[1] as string)
+      case 'debugger:verify-md5':
+        return this.handleDebuggerVerifyMd5(
+          args[0] as 'tcp' | 'rtu' | 'websocket' | 'simulator',
+          args[1] as {
+            ipAddress?: string
+            port?: string
+            baudRate?: number
+            slaveId?: number
+            jwtToken?: string
+          },
+          args[2] as string,
+        )
+      case 'debugger:read-program-st-md5':
+        return this.handleReadProgramStMd5(args[0] as string, args[1] as string)
+      case 'debugger:get-variables-list':
+        return this.handleDebuggerGetVariablesList(args[0] as number[])
+      case 'debugger:set-variable':
+        return this.handleDebuggerSetVariable(args[0] as number, args[1] as boolean, args[2] as Uint8Array | undefined)
+      case 'debugger:connect':
+        return this.handleDebuggerConnect(
+          args[0] as 'tcp' | 'rtu' | 'websocket' | 'simulator',
+          args[1] as {
+            ipAddress?: string
+            port?: string
+            baudRate?: number
+            slaveId?: number
+            jwtToken?: string
+          },
+        )
+      case 'debugger:disconnect':
+        return this.handleDebuggerDisconnect()
+      case 'runtime:get-users-info':
+        return this.handleRuntimeGetUsersInfo(args[0] as string)
+      case 'runtime:create-user':
+        return this.handleRuntimeCreateUser(args[0] as string, args[1] as string, args[2] as string)
+      case 'runtime:login':
+        return this.handleRuntimeLogin(args[0] as string, args[1] as string, args[2] as string)
+      case 'runtime:get-status':
+        return this.handleRuntimeGetStatus(args[0] as string, args[1] as string, args[2] as boolean | undefined)
+      case 'runtime:start-plc':
+        return this.handleRuntimeStartPlc(args[0] as string, args[1] as string)
+      case 'runtime:stop-plc':
+        return this.handleRuntimeStopPlc(args[0] as string, args[1] as string)
+      case 'runtime:get-compilation-status':
+        return this.handleRuntimeGetCompilationStatus(args[0] as string, args[1] as string)
+      case 'runtime:get-logs':
+        return this.handleRuntimeGetLogs(args[0] as string, args[1] as string, args[2] as number | undefined)
+      case 'runtime:clear-credentials':
+        return this.handleRuntimeClearCredentials()
+      case 'runtime:get-serial-ports':
+        return this.handleRuntimeGetSerialPorts(args[0] as string, args[1] as string)
+      case 'simulator:load-firmware':
+        return this.handleSimulatorLoadFirmware(args[0] as string)
+      case 'simulator:stop':
+        return this.handleSimulatorStop()
+      case 'simulator:is-running':
+        return this.handleSimulatorIsRunning()
+      case 'file:watch-start':
+        return this.handleFileWatchStart(args[0] as string)
+      case 'file:watch-stop':
+        return this.handleFileWatchStop(args[0] as string)
+      case 'file:watch-stop-all':
+        return this.handleFileWatchStopAll()
+      case 'file:read-content':
+        return this.handleFileReadContent(args[0] as string)
+      default:
+        throw new Error(`Unknown invoke channel: ${channel}`)
+    }
+  }
 
-    // +++ !! Deprecated: These handlers are outdated and should be removed. +++
-
-    // this.ipcMain.on('compiler:setup-environment', this.handleCompilerSetupEnvironment)
-    // this.ipcMain.handle('compiler:create-build-directory', this.handleCompilerCreateBuildDirectory)
-    // this.ipcMain.handle('compiler:build-xml-file', this.handleCompilerBuildXmlFile)
-    // this.ipcMain.on('compiler:build-st-program', this.handleCompilerBuildStProgram)
-    // this.ipcMain.on('compiler:generate-c-files', this.handleCompilerGenerateCFiles)
-
-    // ===================== WINDOW CONTROLS =====================
-    this.ipcMain.on('window-controls:close', this.handleWindowControlsClose)
-    this.ipcMain.on('window-controls:closed', this.handleWindowControlsClosed)
-    this.ipcMain.on('window-controls:hide', this.handleWindowControlsHide)
-    this.ipcMain.on('window-controls:minimize', this.handleWindowControlsMinimize)
-    this.ipcMain.on('window-controls:maximize', this.handleWindowControlsMaximize)
-    this.ipcMain.on('window:reload', this.handleWindowReload)
-    this.ipcMain.on('window:rebuild-menu', this.handleWindowRebuildMenu)
-
-    // ===================== HARDWARE =====================
-    this.ipcMain.handle('hardware:get-available-communication-ports', this.handleHardwareGetAvailableCommunicationPorts)
-    this.ipcMain.handle('hardware:get-available-boards', this.handleHardwareGetAvailableBoards)
-    this.ipcMain.handle('hardware:refresh-communication-ports', this.handleHardwareRefreshCommunicationPorts)
-    this.ipcMain.handle('hardware:refresh-available-boards', this.handleHardwareRefreshAvailableBoards)
-
-    // ===================== UTILITIES =====================
-    this.ipcMain.handle('util:get-preview-image', this.handleUtilGetPreviewImage)
-    this.ipcMain.on('util:log', this.handleUtilLog)
-    this.ipcMain.handle('util:read-debug-file', this.handleReadDebugFile)
-
-    // ===================== DEBUGGER =====================
-    this.ipcMain.handle('debugger:verify-md5', this.handleDebuggerVerifyMd5)
-    this.ipcMain.handle('debugger:read-program-st-md5', this.handleReadProgramStMd5)
-    this.ipcMain.handle('debugger:get-variables-list', this.handleDebuggerGetVariablesList)
-    this.ipcMain.handle('debugger:set-variable', this.handleDebuggerSetVariable)
-    this.ipcMain.handle('debugger:connect', this.handleDebuggerConnect)
-    this.ipcMain.handle('debugger:disconnect', this.handleDebuggerDisconnect)
-
-    // ===================== RUNTIME API =====================
-    this.ipcMain.handle('runtime:get-users-info', this.handleRuntimeGetUsersInfo)
-    this.ipcMain.handle('runtime:create-user', this.handleRuntimeCreateUser)
-    this.ipcMain.handle('runtime:login', this.handleRuntimeLogin)
-    this.ipcMain.handle('runtime:get-status', this.handleRuntimeGetStatus)
-    this.ipcMain.handle('runtime:start-plc', this.handleRuntimeStartPlc)
-    this.ipcMain.handle('runtime:stop-plc', this.handleRuntimeStopPlc)
-    this.ipcMain.handle('runtime:get-compilation-status', this.handleRuntimeGetCompilationStatus)
-    this.ipcMain.handle('runtime:get-logs', this.handleRuntimeGetLogs)
-    this.ipcMain.handle('runtime:clear-credentials', this.handleRuntimeClearCredentials)
-    this.ipcMain.handle('runtime:get-serial-ports', this.handleRuntimeGetSerialPorts)
-
-    // ===================== SIMULATOR =====================
-    this.ipcMain.handle('simulator:load-firmware', this.handleSimulatorLoadFirmware)
-    this.ipcMain.handle('simulator:stop', this.handleSimulatorStop)
-    this.ipcMain.handle('simulator:is-running', this.handleSimulatorIsRunning)
-
-    // ===================== FILE WATCHER =====================
-    this.ipcMain.handle('file:watch-start', this.handleFileWatchStart)
-    this.ipcMain.handle('file:watch-stop', this.handleFileWatchStop)
-    this.ipcMain.handle('file:watch-stop-all', this.handleFileWatchStopAll)
-    this.ipcMain.handle('file:read-content', this.handleFileReadContent)
+  private dispatchSend(channel: string, args: unknown[]): void {
+    switch (channel) {
+      case 'app:quit':
+        this.handleAppQuit()
+        break
+      case 'system:update-theme':
+        this.mainIpcEventHandlers.handleUpdateTheme()
+        this.emitToRenderer('system:update-theme')
+        break
+      case 'util:log': {
+        const payload = args[0] as { level: 'info' | 'error'; message: string }
+        this.handleUtilLog(payload)
+        break
+      }
+      default:
+        break
+    }
   }
 
   // ===================== HANDLER METHODS =====================
   // Project-related handlers
-  handleProjectCreate = async (_event: IpcMainInvokeEvent, data: CreateProjectFileProps) => {
+  handleProjectCreate = async (data: CreateProjectFileProps) => {
     this.stopSimulatorAndNotify()
     const response = await this.projectService.createProject(data)
     return response
@@ -626,19 +716,16 @@ class MainProcessBridge implements MainIpcModule {
     }
     return response
   }
-  handleProjectPathPicker = async (_event: IpcMainInvokeEvent) => {
-    const windowManager = this.mainWindow
+  handleProjectPathPicker = async () => {
     try {
-      if (windowManager) {
-        const res = await getProjectPath(windowManager)
-        return res
-      }
-      console.error('Window object not defined')
+      const res = await getProjectPath()
+      return res
     } catch (error) {
       console.error('Error getting project path:', error)
+      return undefined
     }
   }
-  handleFileSave = async (_event: IpcMainInvokeEvent, filePath: string, content: unknown) => {
+  handleFileSave = async (filePath: string, content: unknown) => {
     const result = await this.projectService.saveFile(filePath, content)
     if (result.success) {
       // Update lastMtime for the saved file's watcher to suppress self-trigger
@@ -656,9 +743,9 @@ class MainProcessBridge implements MainIpcModule {
     }
     return result
   }
-  handleProjectSave = (_event: IpcMainInvokeEvent, { projectPath, content }: IDataToWrite) =>
+  handleProjectSave = ({ projectPath, content }: IDataToWrite) =>
     this.projectService.saveProject({ projectPath, content })
-  handleProjectOpenByPath = async (_event: IpcMainInvokeEvent, projectPath: string) => {
+  handleProjectOpenByPath = async (projectPath: string) => {
     this.stopSimulatorAndNotify()
     try {
       const response = await this.projectService.openProjectByPath(projectPath)
@@ -678,7 +765,7 @@ class MainProcessBridge implements MainIpcModule {
   }
 
   // Pou-related handlers
-  handleCreatePouFile = async (_event: IpcMainInvokeEvent, props: CreatePouFileProps) => {
+  handleCreatePouFile = async (props: CreatePouFileProps) => {
     try {
       const response = await this.pouService.createPouFile(props)
       return response
@@ -694,7 +781,7 @@ class MainProcessBridge implements MainIpcModule {
       }
     }
   }
-  handleDeletePouFile = async (_event: IpcMainInvokeEvent, filePath: string) => {
+  handleDeletePouFile = async (filePath: string) => {
     try {
       const response = await this.pouService.deletePouFile(filePath)
       return response
@@ -710,14 +797,7 @@ class MainProcessBridge implements MainIpcModule {
       }
     }
   }
-  handleRenamePouFile = async (
-    _event: IpcMainInvokeEvent,
-    data: {
-      filePath: string
-      newFileName: string
-      fileContent?: unknown
-    },
-  ) => {
+  handleRenamePouFile = async (data: { filePath: string; newFileName: string; fileContent?: unknown }) => {
     try {
       const response = await this.pouService.renamePouFile(data)
       return response
@@ -735,31 +815,24 @@ class MainProcessBridge implements MainIpcModule {
   }
 
   // App and system handlers
-  handleOpenExternalLink = async (_event: IpcMainInvokeEvent, url: string) => {
-    try {
-      await shell.openExternal(url)
-      return { success: true }
-    } catch (error) {
-      console.error('Error opening external link:', error)
-      return { success: false, error }
-    }
+  handleOpenExternalLink = (url: string) => {
+    return { success: true, url }
   }
-  handleGetSystemInfo = () => {
-    const appStore = this.store as unknown as { get: (key: string) => unknown }
-    const savedTheme = appStore.get('theme')
+  handleGetSystemInfo = async () => {
+    const savedTheme = await this.store.get('theme')
     if (savedTheme === 'dark' || savedTheme === 'light') {
-      nativeTheme.themeSource = savedTheme
+      // Theme is managed in the browser for the web version.
     }
 
     return {
       OS: platform,
-      architecture: 'x64',
-      prefersDarkMode: nativeTheme.shouldUseDarkColors,
-      isWindowMaximized: this.mainWindow?.isMaximized(),
+      architecture: process.arch === 'arm64' ? 'arm' : 'x64',
+      prefersDarkMode: savedTheme === 'dark',
+      isWindowMaximized: false,
     }
   }
   handleStoreRetrieveRecent = async () => {
-    const pathToUserDataFolder = join(app.getPath('userData'), 'User')
+    const pathToUserDataFolder = join(getUserDataPath(), 'User')
     const pathToUserHistoryFolder = join(pathToUserDataFolder, 'History')
     const projectsFilePath = join(pathToUserHistoryFolder, 'projects.json')
     const response = await this.projectService.readProjectHistory(projectsFilePath)
@@ -772,75 +845,15 @@ class MainProcessBridge implements MainIpcModule {
   }
   handleAppQuit = () => {
     this.simulatorModule.stop()
-    if (this.mainWindow) {
-      this.mainWindow.destroy()
-    }
-    app.quit()
   }
 
   // Compiler service handlers
   // TODO: This handle should be refactored to use a new approach on module implementation.
   handleCompilerExportProjectXml = (
-    _ev: IpcMainInvokeEvent,
     pathToUserProject: string,
     dataToCreateXml: ProjectState['data'],
     xmlFormatTarget: 'old-editor' | 'codesys',
   ) => this.compilerModule.createXmlFile(pathToUserProject, dataToCreateXml, xmlFormatTarget)
-
-  handleRunCompileProgram = (event: IpcMainEvent, args: Array<string | ProjectState['data']>) => {
-    const mainProcessPort = event.ports[0]
-    void this.compilerModule.compileProgram(args, mainProcessPort, this)
-  }
-
-  handleRunDebugCompilation = (event: IpcMainEvent, args: Array<string | ProjectState['data']>) => {
-    const mainProcessPort = event.ports[0]
-    void this.compilerModule.compileForDebugger(args, mainProcessPort)
-  }
-
-  // TODO: These handlers are outdated and should be removed.
-  // handleCompilerSetupEnvironment = (event: IpcMainEvent) => {
-  //   const replyPort = Array.isArray(event.ports) && event.ports.length > 0 ? event.ports[0] : undefined
-  //   if (replyPort) {
-  //     void this.compilerService.setupEnvironment(replyPort)
-  //   }
-  // }
-  // handleCompilerCreateBuildDirectory = (_ev: IpcMainInvokeEvent, pathToUserProject: string) =>
-  //   this.compilerService.createBuildDirectoryIfNotExist(pathToUserProject)
-  // handleCompilerBuildXmlFile = (
-  //   _ev: IpcMainInvokeEvent,
-  //   pathToUserProject: string,
-  //   dataToCreateXml: ProjectState['data'],
-  // ) => this.compilerService.buildXmlFile(pathToUserProject, dataToCreateXml)
-  // handleCompilerBuildStProgram = (event: IpcMainEvent, pathToXMLFile: string) => {
-  //   const replyPort = Array.isArray(event.ports) && event.ports.length > 0 ? event.ports[0] : undefined
-  //   if (replyPort) {
-  //     this.compilerService.compileSTProgram(pathToXMLFile, replyPort)
-  //   }
-  // }
-  // handleCompilerGenerateCFiles = (event: IpcMainEvent, pathToStProgram: string) => {
-  //   const replyPort = Array.isArray(event.ports) && event.ports.length > 0 ? event.ports[0] : undefined
-  //   if (replyPort) {
-  //     this.compilerService.generateCFiles(pathToStProgram, replyPort)
-  //   }
-  // }
-
-  // Window controls handlers
-  handleWindowControlsClose = () => this.mainWindow?.close()
-  handleWindowControlsClosed = () => this.mainWindow?.destroy()
-  handleWindowControlsHide = () => this.mainWindow?.hide()
-  handleWindowControlsMinimize = () => this.mainWindow?.minimize()
-  handleWindowControlsMaximize = () => {
-    if (this.mainWindow?.isMaximized()) {
-      this.mainWindow?.restore()
-    } else {
-      this.mainWindow?.maximize()
-    }
-  }
-  handleWindowReload = () => {
-    this.simulatorModule.stop()
-    this.mainWindow?.webContents.reload()
-  }
-  handleWindowRebuildMenu = () => void this.menuBuilder.buildMenu()
 
   // Hardware handlers
   handleHardwareGetAvailableCommunicationPorts = async () => this.hardwareModule.getAvailableSerialPorts()
@@ -849,12 +862,11 @@ class MainProcessBridge implements MainIpcModule {
   handleHardwareRefreshAvailableBoards = async () => this.hardwareModule.getAvailableBoards()
 
   // Utility handlers
-  handleUtilGetPreviewImage = async (_event: IpcMainInvokeEvent, image: string) =>
-    this.hardwareModule.getBoardImagePreview(image)
-  handleUtilLog = (_: IpcMainEvent, { level, message }: { level: 'info' | 'error'; message: string }) => {
+  handleUtilGetPreviewImage = async (image: string) => this.hardwareModule.getBoardImagePreview(image)
+  handleUtilLog = ({ level, message }: { level: 'info' | 'error'; message: string }) => {
     logger[level](message)
   }
-  handleReadDebugFile = async (_event: IpcMainInvokeEvent, projectPath: string, boardTarget: string) => {
+  handleReadDebugFile = async (projectPath: string, boardTarget: string) => {
     try {
       const fs = await import('fs/promises')
       const path = await import('path')
@@ -877,7 +889,6 @@ class MainProcessBridge implements MainIpcModule {
   }
 
   handleDebuggerVerifyMd5 = async (
-    _event: IpcMainInvokeEvent,
     connectionType: 'tcp' | 'rtu' | 'websocket' | 'simulator',
     connectionParams: {
       ipAddress?: string
@@ -985,7 +996,6 @@ class MainProcessBridge implements MainIpcModule {
   }
 
   handleReadProgramStMd5 = async (
-    _event: IpcMainInvokeEvent,
     projectPath: string,
     boardTarget: string,
   ): Promise<{ success: boolean; md5?: string; error?: string }> => {
@@ -1022,7 +1032,6 @@ class MainProcessBridge implements MainIpcModule {
   }
 
   handleDebuggerGetVariablesList = async (
-    _event: IpcMainInvokeEvent,
     variableIndexes: number[],
   ): Promise<{
     success: boolean
@@ -1161,7 +1170,6 @@ class MainProcessBridge implements MainIpcModule {
   }
 
   handleDebuggerConnect = async (
-    _event: IpcMainInvokeEvent,
     connectionType: 'tcp' | 'rtu' | 'websocket' | 'simulator',
     connectionParams: {
       ipAddress?: string
@@ -1287,7 +1295,7 @@ class MainProcessBridge implements MainIpcModule {
     }
   }
 
-  handleDebuggerDisconnect = (_event: IpcMainInvokeEvent): Promise<{ success: boolean }> => {
+  handleDebuggerDisconnect = (): Promise<{ success: boolean }> => {
     if (this.debuggerModbusClient) {
       this.debuggerModbusClient.disconnect()
       this.debuggerModbusClient = null
@@ -1307,7 +1315,6 @@ class MainProcessBridge implements MainIpcModule {
   }
 
   handleDebuggerSetVariable = async (
-    _event: IpcMainInvokeEvent,
     variableIndex: number,
     force: boolean,
     valueBuffer?: Uint8Array,
@@ -1371,14 +1378,11 @@ class MainProcessBridge implements MainIpcModule {
   private stopSimulatorAndNotify(): void {
     if (this.simulatorModule.isRunning()) {
       this.simulatorModule.stop()
-      this.mainWindow?.webContents.send('simulator:stopped')
+      this.emitToRenderer('simulator:stopped')
     }
   }
 
-  handleSimulatorLoadFirmware = async (
-    _event: IpcMainInvokeEvent,
-    hexPath: string,
-  ): Promise<{ success: boolean; error?: string }> => {
+  handleSimulatorLoadFirmware = async (hexPath: string): Promise<{ success: boolean; error?: string }> => {
     try {
       await this.simulatorModule.loadAndRun(hexPath)
       return { success: true }
@@ -1387,21 +1391,18 @@ class MainProcessBridge implements MainIpcModule {
     }
   }
 
-  handleSimulatorStop = (_event: IpcMainInvokeEvent): Promise<{ success: boolean }> => {
+  handleSimulatorStop = (): Promise<{ success: boolean }> => {
     this.simulatorModule.stop()
     return Promise.resolve({ success: true })
   }
 
-  handleSimulatorIsRunning = (_event: IpcMainInvokeEvent): Promise<boolean> => {
+  handleSimulatorIsRunning = (): Promise<boolean> => {
     return Promise.resolve(this.simulatorModule.isRunning())
   }
 
   // Using watchFile (polling-based) instead of watch for better macOS compatibility
   // fs.watch can fail when editors use "safe write" (write to temp file, then rename)
-  handleFileWatchStart = (
-    _event: IpcMainInvokeEvent,
-    filePath: string,
-  ): Promise<{ success: boolean; error?: string }> => {
+  handleFileWatchStart = (filePath: string): Promise<{ success: boolean; error?: string }> => {
     if (!this.validateFilePath(filePath)) {
       return Promise.resolve({ success: false, error: 'Path is outside the project directory' })
     }
@@ -1427,7 +1428,7 @@ class MainProcessBridge implements MainIpcModule {
 
             if (curr.mtimeMs > prev.mtimeMs && curr.mtimeMs > watcherData.lastMtime) {
               watcherData.lastMtime = curr.mtimeMs
-              this.mainWindow?.webContents.send('file:external-change', { filePath })
+              this.emitToRenderer('file:external-change', { filePath })
             }
           })
 
@@ -1440,7 +1441,7 @@ class MainProcessBridge implements MainIpcModule {
     })
   }
 
-  handleFileWatchStop = (_event: IpcMainInvokeEvent, filePath: string): { success: boolean; error?: string } => {
+  handleFileWatchStop = (filePath: string): { success: boolean; error?: string } => {
     if (!this.validateFilePath(filePath)) {
       return { success: false, error: 'Path is outside the project directory' }
     }
@@ -1451,7 +1452,7 @@ class MainProcessBridge implements MainIpcModule {
     return { success: true }
   }
 
-  handleFileWatchStopAll = (_event: IpcMainInvokeEvent): { success: boolean } => {
+  handleFileWatchStopAll = (): { success: boolean } => {
     for (const [filePath] of this.fileWatchers) {
       unwatchFile(filePath)
     }
@@ -1459,10 +1460,7 @@ class MainProcessBridge implements MainIpcModule {
     return { success: true }
   }
 
-  handleFileReadContent = (
-    _event: IpcMainInvokeEvent,
-    filePath: string,
-  ): Promise<{ success: boolean; content?: string; error?: string }> => {
+  handleFileReadContent = (filePath: string): Promise<{ success: boolean; content?: string; error?: string }> => {
     if (!this.validateFilePath(filePath)) {
       return Promise.resolve({ success: false, error: 'Path is outside the project directory' })
     }
@@ -1479,11 +1477,13 @@ class MainProcessBridge implements MainIpcModule {
 
   // ===================== EVENT HANDLERS =====================
   mainIpcEventHandlers = {
-    handleUpdateTheme: () => {
-      nativeTheme.themeSource = nativeTheme.shouldUseDarkColors ? 'light' : 'dark'
+    handleUpdateTheme: async () => {
+      const currentTheme = await this.store.get('theme')
+      const nextTheme = currentTheme === 'dark' ? 'light' : 'dark'
+      await this.store.set('theme', nextTheme)
     },
-    createPou: () => this.mainWindow?.webContents.send('pou:createPou', { ok: true }),
+    createPou: () => this.emitToRenderer('pou:createPou', { ok: true }),
   }
 }
 
-export default MainProcessBridge
+export default ApiBridge

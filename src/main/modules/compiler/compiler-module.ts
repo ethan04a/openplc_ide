@@ -10,6 +10,8 @@ import { promisify } from 'node:util'
 
 import { CreateXMLFile } from '@root/main/utils'
 import { ProjectState } from '@root/renderer/store/slices'
+import type { CompileStreamPort } from '@root/shared/platform/compile-stream-port'
+import { getResourcesPath, getUserDataPath } from '@root/shared/platform/paths'
 import type { DeviceConfiguration, DevicePin } from '@root/types/PLC/devices'
 import { XmlGenerator } from '@root/utils'
 import { type CppPouData as CppPouDataCode, generateCBlocksCode } from '@root/utils/cpp/generateCBlocksCode'
@@ -20,8 +22,6 @@ import { generateOpcUaConfig, OpcUaConfigError } from '@root/utils/opcua'
 import { parsePlcStatus } from '@root/utils/plc-status'
 import { getRuntimeHttpsOptions } from '@root/utils/runtime-https-config'
 import { generateS7CommConfig } from '@root/utils/s7comm'
-import { app as electronApp, dialog } from 'electron'
-import type { MessagePortMain } from 'electron/main'
 import JSZip from 'jszip'
 
 import type { ArduinoCoreControl, HalsFile } from './compiler-types'
@@ -93,7 +93,7 @@ class CompilerModule {
     this.halsFilePath = this.#constructHalsFilePath()
 
     this.arduinoCliBinaryPath = this.#constructArduinoCliBinaryPath()
-    this.arduinoCliConfigurationFilePath = join(electronApp.getPath('userData'), 'User', 'arduino-cli.yaml')
+    this.arduinoCliConfigurationFilePath = join(getUserDataPath(), 'User', 'arduino-cli.yaml')
     // INFO: We use this approach because some commands can receive additional parameters as a string array.
     this.arduinoCliBaseParameters = ['--config-file', this.arduinoCliConfigurationFilePath]
 
@@ -137,7 +137,7 @@ class CompilerModule {
     if (CompilerModule.HOST_ARCHITECTURE !== 'x64' && CompilerModule.HOST_ARCHITECTURE !== 'arm64') return ''
     const platformSpecificPath = join(CompilerModule.HOST_PLATFORM, CompilerModule.HOST_ARCHITECTURE)
     return join(
-      CompilerModule.DEVELOPMENT_MODE ? process.cwd() : process.resourcesPath,
+      CompilerModule.DEVELOPMENT_MODE ? process.cwd() : getResourcesPath(),
       CompilerModule.DEVELOPMENT_MODE ? 'resources' : '',
       'bin',
       CompilerModule.DEVELOPMENT_MODE ? platformSpecificPath : '',
@@ -146,7 +146,7 @@ class CompilerModule {
 
   #constructSourceDirectoryPath(): string {
     return join(
-      CompilerModule.DEVELOPMENT_MODE ? process.cwd() : process.resourcesPath,
+      CompilerModule.DEVELOPMENT_MODE ? process.cwd() : getResourcesPath(),
       CompilerModule.DEVELOPMENT_MODE ? 'resources' : '',
       'sources',
     )
@@ -154,7 +154,7 @@ class CompilerModule {
 
   #constructHalsFilePath(): string {
     return join(
-      CompilerModule.DEVELOPMENT_MODE ? process.cwd() : process.resourcesPath,
+      CompilerModule.DEVELOPMENT_MODE ? process.cwd() : getResourcesPath(),
       CompilerModule.DEVELOPMENT_MODE ? 'resources' : '',
       'sources',
       'boards',
@@ -270,18 +270,13 @@ class CompilerModule {
   }
 
   async getArduinoInstalledCores() {
-    const coreControlFilePath = join(electronApp.getPath('userData'), 'User', 'Runtime', 'arduino-core-control.json')
+    const coreControlFilePath = join(getUserDataPath(), 'User', 'Runtime', 'arduino-core-control.json')
     const coreControlFileContent = await CompilerModule.readJSONFile<ArduinoCoreControl>(coreControlFilePath)
     return coreControlFileContent
   }
 
   async getArduinoInstalledLibraries() {
-    const libraryControlFilePath = join(
-      electronApp.getPath('userData'),
-      'User',
-      'Runtime',
-      'arduino-library-control.json',
-    )
+    const libraryControlFilePath = join(getUserDataPath(), 'User', 'Runtime', 'arduino-library-control.json')
     const libraryControlFileContent =
       await CompilerModule.readJSONFile<Array<Record<string, string>>>(libraryControlFilePath)
 
@@ -1113,17 +1108,8 @@ class CompilerModule {
     pathToUserProject: string,
     dataToCreateXml: ProjectState['data'],
     parseTo: 'old-editor' | 'codesys',
-  ): Promise<{ success: boolean; message: string }> {
-    const { filePath } = await dialog.showSaveDialog({
-      title: 'Export Project',
-      defaultPath: join(pathToUserProject, 'plc.xml'),
-      buttonLabel: 'Save',
-      filters: [{ name: 'XML Files', extensions: ['xml'] }],
-    })
-
-    if (!filePath) {
-      return { success: false, message: 'User canceled the save dialog' }
-    }
+  ): Promise<{ success: boolean; message: string; content?: string; filePath?: string }> {
+    const filePath = join(pathToUserProject, 'plc.xml')
 
     const { data: projectDataAsString, message } = XmlGenerator(dataToCreateXml, parseTo)
     if (!projectDataAsString) {
@@ -1141,6 +1127,8 @@ class CompilerModule {
     return {
       success: result.success,
       message: result.success ? ` XML file created at ${filePath}` : 'Failed to create XML file',
+      content: projectDataAsString,
+      filePath,
     }
   }
 
@@ -1359,7 +1347,7 @@ class CompilerModule {
   // Work in progress - we should specify the arguments and the return type correctly.
   async compileProgram(
     args: Array<string | null | ProjectState['data']>,
-    _mainProcessPort: MessagePortMain,
+    _mainProcessPort: CompileStreamPort,
     mainProcessBridge: {
       makeRuntimeApiRequest: <T = void>(
         ipAddress: string,
@@ -1371,8 +1359,6 @@ class CompilerModule {
   ): Promise<void> {
     // Start the main process port to communicate with the renderer process.
     // INFO: This is necessary to send messages back to the renderer process.
-    _mainProcessPort.start()
-
     _mainProcessPort.postMessage({ logLevel: 'info', message: 'Starting compilation process...' })
     // INFO: We assume the first argument is the project path,
     // INFO: the second argument is the board target, and the third argument is the project data.
@@ -2139,10 +2125,8 @@ class CompilerModule {
 
   async compileForDebugger(
     args: Array<string | null | ProjectState['data']>,
-    _mainProcessPort: MessagePortMain,
+    _mainProcessPort: CompileStreamPort,
   ): Promise<void> {
-    _mainProcessPort.start()
-
     _mainProcessPort.postMessage({ logLevel: 'info', message: 'Starting debug compilation process...' })
 
     const [projectPath, boardTarget, projectData] = args as [string, string, ProjectState['data']]

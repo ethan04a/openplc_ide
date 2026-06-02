@@ -1,15 +1,11 @@
-import fs from 'fs';
-import { rimrafSync } from 'rimraf';
+import fs from 'fs'
+import { join, dirname } from 'path'
+import { fileURLToPath } from 'url'
+import { rimrafSync } from 'rimraf'
 
-import webpackPaths from '../configs/webpack/webpack.paths';
-
-const foldersToRemove = [
-  webpackPaths.distPath,
-  webpackPaths.buildPath,
-  webpackPaths.dllPath,
-  '/tmp/*.dmg'
-];
+const rootPath = join(dirname(fileURLToPath(import.meta.url)), '..')
+const foldersToRemove = [join(rootPath, 'release', 'app', 'dist'), join(rootPath, 'dist')]
 
 foldersToRemove.forEach((folder) => {
-  if (fs.existsSync(folder)) rimrafSync(folder);
-});
+  if (fs.existsSync(folder)) rimrafSync(folder)
+})

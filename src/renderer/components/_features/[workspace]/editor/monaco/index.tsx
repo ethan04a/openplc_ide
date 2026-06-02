@@ -3,11 +3,11 @@ import './configs'
 import { Editor as PrimitiveEditor } from '@monaco-editor/react'
 import { Modal, ModalContent, ModalTitle } from '@process:renderer/components/_molecules/modal'
 import { openPLCStoreBase, useOpenPLCStore } from '@process:renderer/store'
+import { bridge } from '@root/platform'
 import { PLCVariable } from '@root/types/PLC'
 import { baseTypeSchema, type PLCPou } from '@root/types/PLC/open-plc'
 import { getExtensionFromLanguage, getFolderFromPouType } from '@root/utils/PLC/pou-file-extensions'
 import { parseHybridPouFromString, parseTextualPouFromString } from '@root/utils/PLC/pou-text-parser'
-import type { IpcRendererEvent } from 'electron'
 import * as monaco from 'monaco-editor'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
@@ -55,14 +55,6 @@ type monacoEditorOptionsType = monaco.editor.IStandaloneEditorConstructionOption
 
 type SnippetController = {
   insert: (snippet: string, options?: unknown) => void
-}
-
-// Cast window.bridge once for file-watcher methods that don't resolve in the renderer webpack context
-const bridge = window.bridge as unknown as {
-  fileWatchStart: (path: string) => Promise<{ success: boolean; error?: string }>
-  fileWatchStop: (path: string) => Promise<{ success: boolean }>
-  fileReadContent: (path: string) => Promise<{ success: boolean; content?: string; error?: string }>
-  onFileExternalChange: (handler: (event: IpcRendererEvent, data: { filePath: string }) => void) => () => void
 }
 
 const MonacoEditor = (props: monacoEditorProps): ReturnType<typeof PrimitiveEditor> => {

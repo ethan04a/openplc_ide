@@ -1,16 +1,14 @@
-import { BrowserWindow, dialog } from 'electron'
-
 import { i18n } from '../../utils/i18n'
 import { isEmptyDir } from './is-empty-dir'
+import { pickNativeFolder } from './native-folder-picker'
 
-type GetProjectPathProps = InstanceType<typeof BrowserWindow>
-
-const getProjectPath = async (serviceManager: GetProjectPathProps) => {
-  const { canceled, filePaths } = await dialog.showOpenDialog(serviceManager, {
+const getProjectPath = async () => {
+  const selectedPath = await pickNativeFolder({
     title: i18n.t('createProject:dialog.title'),
-    properties: ['openDirectory', 'createDirectory'],
+    createDirectory: true,
   })
-  if (canceled) {
+
+  if (!selectedPath) {
     return {
       success: false,
       error: {
@@ -20,9 +18,7 @@ const getProjectPath = async (serviceManager: GetProjectPathProps) => {
     }
   }
 
-  const [filePath] = filePaths
-
-  if (!(await isEmptyDir(filePath))) {
+  if (!(await isEmptyDir(selectedPath))) {
     return {
       success: false,
       error: {
@@ -34,7 +30,7 @@ const getProjectPath = async (serviceManager: GetProjectPathProps) => {
 
   return {
     success: true,
-    path: filePath,
+    path: selectedPath,
   }
 }
 

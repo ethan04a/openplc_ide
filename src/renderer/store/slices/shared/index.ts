@@ -1,4 +1,4 @@
-import { ISaveDataResponse } from '@root/main/modules/ipc/renderer'
+import { bridge } from '@root/platform'
 import { toast } from '@root/renderer/components/_features/[app]/toast/use-toast'
 import {
   DeleteDatatype,
@@ -8,6 +8,7 @@ import {
 } from '@root/renderer/components/_organisms/modals'
 import { syncNodesWithVariables, syncNodesWithVariablesFBD } from '@root/renderer/utils/sync-nodes-with-variables'
 import { CreateProjectFileProps, IProjectServiceResponse } from '@root/types/IPC/project-service'
+import { ISaveDataResponse } from '@root/types/IPC/save-data'
 import { PLCVariable as VariablePLC } from '@root/types/PLC'
 import {
   PLCArrayDatatype,
@@ -48,12 +49,6 @@ import { TabsProps, TabsSlice } from '../tabs'
 import { CreateEditorObjectFromTab } from '../tabs/utils'
 import { WorkspaceSlice } from '../workspace'
 import { CreateEditorObject, CreatePouObject } from './utils'
-
-// Cast window.bridge once for file-watcher methods that don't resolve in the renderer webpack context
-const fileBridge = window.bridge as unknown as {
-  fileWatchStopAll: () => Promise<{ success: boolean }>
-  fileReadContent: (path: string) => Promise<{ success: boolean; content?: string; error?: string }>
-}
 
 type PropsToCreatePou = {
   name: string
@@ -197,7 +192,7 @@ export const createSharedSlice: StateCreator<
        * This will allow the POU to be saved and loaded correctly.
        */
       try {
-        const response = await window.bridge.createPouFile({
+        const response = await bridge.createPouFile({
           path,
           pou: newPouData,
         })
@@ -466,7 +461,7 @@ export const createSharedSlice: StateCreator<
       const projectPath = getState().project.meta.path
       const filePath = file.filePath.includes(projectPath) ? file.filePath : `${projectPath}${file.filePath}`
       try {
-        const response = await window.bridge.renamePouFile({
+        const response = await bridge.renamePouFile({
           filePath,
           newFileName: `${newPouName}.json`,
           fileContent: pou,
@@ -618,7 +613,7 @@ export const createSharedSlice: StateCreator<
       } as PLCPou
 
       try {
-        const res = await window.bridge.createPouFile({
+        const res = await bridge.createPouFile({
           path: `${getState().project.meta.path}/pous/${copiedPou.type}s/${copiedPou.data.name}.json`,
           pou: copiedPou,
         })
@@ -1138,7 +1133,7 @@ export const createSharedSlice: StateCreator<
   sharedWorkspaceActions: {
     clearStatesOnCloseProject: () => {
       // Stop all file watchers before clearing state
-      void fileBridge.fileWatchStopAll()
+      void bridge.fileWatchStopAll()
 
       // Dispose all Monaco editor models to prevent stale content from being cached
       // This ensures that when a new project is opened, Monaco will use fresh content
@@ -1161,7 +1156,7 @@ export const createSharedSlice: StateCreator<
       getState().historyActions.clearHistory()
       getState().searchActions.clearSearch()
       getState().modalActions.closeModal()
-      window.bridge.rebuildMenu()
+      bridge.rebuildMenu()
     },
 
     closeProject: () => {
@@ -1413,7 +1408,7 @@ export const createSharedSlice: StateCreator<
     },
     openProject: async () => {
       getState().sharedWorkspaceActions.clearStatesOnCloseProject()
-      const { success, data, error } = await window.bridge.openProject()
+      const { success, data, error } = await bridge.openProject()
 
       if (success) {
         getState().sharedWorkspaceActions.handleOpenProjectRequest(data)
@@ -1445,7 +1440,7 @@ export const createSharedSlice: StateCreator<
     },
     openProjectByPath: async (projectPath: string) => {
       getState().sharedWorkspaceActions.clearStatesOnCloseProject()
-      const { success, data, error } = await window.bridge.openProjectByPath(projectPath)
+      const { success, data, error } = await bridge.openProjectByPath(projectPath)
 
       if (success) {
         getState().sharedWorkspaceActions.handleOpenProjectRequest(data)
@@ -1487,7 +1482,7 @@ export const createSharedSlice: StateCreator<
     },
 
     createProject: async (dataToCreateProjectFile) => {
-      const result = await window.bridge.createProject(dataToCreateProjectFile)
+      const result = await bridge.createProject(dataToCreateProjectFile)
 
       if (!result.data) {
         toast({
@@ -1505,7 +1500,7 @@ export const createSharedSlice: StateCreator<
         }
       }
 
-      window.bridge.rebuildMenu()
+      bridge.rebuildMenu()
 
       getState().sharedWorkspaceActions.clearStatesOnCloseProject()
 
@@ -1707,7 +1702,7 @@ export const createSharedSlice: StateCreator<
         projectData.data.data.debugVariables = undefined
       }
 
-      const { success, reason } = await window.bridge.saveProject({
+      const { success, reason } = await bridge.saveProject({
         projectPath: project.meta.path,
         content: {
           projectData: projectData.data,
@@ -1894,7 +1889,7 @@ export const createSharedSlice: StateCreator<
           const filePath = `${projectPath}/pous/${getFolderFromPouType(file.type ?? 'program')}/${name}${extension}`
 
           try {
-            await window.bridge.deletePouFile(filePath)
+            await bridge.deletePouFile(filePath)
           } catch (err) {
             console.error('Error deleting new POU file:', err)
           }
@@ -1930,7 +1925,7 @@ export const createSharedSlice: StateCreator<
           const extension = getExtensionFromLanguage(pouLanguage)
           const filePath = `${projectPath}/pous/${getFolderFromPouType(file.type ?? 'program')}/${name}${extension}`
 
-          const readResult = await fileBridge.fileReadContent(filePath)
+          const readResult = await bridge.fileReadContent(filePath)
           if (!readResult.success || !readResult.content) {
             console.error('Failed to read POU file from disk:', readResult.error)
             return {
@@ -1980,7 +1975,7 @@ export const createSharedSlice: StateCreator<
       ) {
         // Non-POU files stored in project.json: re-read project.json and restore the entity
         const projectPath = getState().project.meta.path
-        const readResult = await fileBridge.fileReadContent(`${projectPath}/project.json`)
+        const readResult = await bridge.fileReadContent(`${projectPath}/project.json`)
         if (!readResult.success || !readResult.content) {
           console.error('Failed to read project.json from disk:', readResult.error)
           return {
@@ -2208,14 +2203,14 @@ export const createSharedSlice: StateCreator<
         case 'function':
         case 'function-block':
         case 'program':
-          saveResponse = await window.bridge.saveFile(filePath, saveContent)
+          saveResponse = await bridge.saveFile(filePath, saveContent)
           break
         case 'device': {
-          const deviceConfigSaveResponse = await window.bridge.saveFile(
+          const deviceConfigSaveResponse = await bridge.saveFile(
             `${projectFilePath}/devices/configuration.json`,
             (saveContent as DeviceState['deviceDefinitions']).configuration,
           )
-          const devicePinMappingSaveResponse = await window.bridge.saveFile(
+          const devicePinMappingSaveResponse = await bridge.saveFile(
             `${projectFilePath}/devices/pin-mapping.json`,
             (saveContent as DeviceState['deviceDefinitions']).pinMapping.pins,
           )
@@ -2229,7 +2224,7 @@ export const createSharedSlice: StateCreator<
         case 'resource':
         case 'server':
         case 'remote-device':
-          saveResponse = await window.bridge.saveFile(`${projectFilePath}/project.json`, saveContent)
+          saveResponse = await bridge.saveFile(`${projectFilePath}/project.json`, saveContent)
           break
         default:
           saveResponse = { success: false, error: 'Unknown file type' }
