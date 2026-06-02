@@ -30,7 +30,7 @@ goto do_full
 
 :show_help
 echo install.bat [--check] [--fix-deps] [--no-start]
-exit /b 0
+goto :finish_ok
 
 :print_info
 echo [INFO] %~1
@@ -172,7 +172,7 @@ goto :eof
 
 :do_fix_deps
 where winget >nul 2>&1
-if errorlevel 1 ( call :print_err "winget not found" & exit /b 1 )
+if errorlevel 1 ( call :print_err "winget not found" & goto :finish_fail )
 where git >nul 2>&1
 if errorlevel 1 winget install --id Git.Git -e --accept-package-agreements --accept-source-agreements
 where node >nul 2>&1
@@ -181,7 +181,7 @@ goto do_check
 
 :do_check
 call :run_dependency_checks
-exit /b %ERRORLEVEL%
+goto :finish_from_errorlevel
 
 :deploy
 call :print_info "========== Build and deploy =========="
@@ -206,13 +206,31 @@ exit /b 0
 
 :do_full
 call :run_dependency_checks
-if errorlevel 1 exit /b 1
+if errorlevel 1 goto :finish_from_errorlevel
 call :deploy
-if errorlevel 1 exit /b 1
+if errorlevel 1 goto :finish_from_errorlevel
 if "%DO_START%"=="0" (
   call :print_info "Skipped start (--no-start)"
-  exit /b 0
+  goto :finish_ok
 )
 call :print_info "========== Start service =========="
+set "OPENPLC_SKIP_PAUSE=1"
 call "%ROOT_DIR%\start.bat"
-exit /b %ERRORLEVEL%
+set "OPENPLC_SKIP_PAUSE="
+goto :finish_from_errorlevel
+
+:finish_ok
+set "EXITCODE=0"
+goto :finish
+
+:finish_fail
+set "EXITCODE=1"
+goto :finish
+
+:finish_from_errorlevel
+set "EXITCODE=%ERRORLEVEL%"
+goto :finish
+
+:finish
+call "%ROOT_DIR%\scripts\lib\pause-if-doubleclick.cmd" %EXITCODE%
+exit /b %EXITCODE%
