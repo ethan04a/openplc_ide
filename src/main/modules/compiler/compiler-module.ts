@@ -140,7 +140,7 @@ class CompilerModule {
       CompilerModule.DEVELOPMENT_MODE ? process.cwd() : getResourcesPath(),
       CompilerModule.DEVELOPMENT_MODE ? 'resources' : '',
       'bin',
-      CompilerModule.DEVELOPMENT_MODE ? platformSpecificPath : '',
+      platformSpecificPath,
     )
   }
 

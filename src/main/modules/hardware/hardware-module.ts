@@ -61,7 +61,7 @@ class HardwareModule {
       HardwareModule.DEVELOPMENT_MODE ? process.cwd() : getResourcesPath(),
       HardwareModule.DEVELOPMENT_MODE ? 'resources' : '',
       'bin',
-      HardwareModule.DEVELOPMENT_MODE ? platformSpecificPath : '',
+      platformSpecificPath,
     )
   }
 
