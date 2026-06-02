@@ -436,7 +436,53 @@ Invoke-WebRequest http://localhost:3001/api/invoke/system:get-system-info `
   -Method POST -Body '{}' -ContentType 'application/json' -UseBasicParsing
 ```
 
-### 9.4 端口占用处理（Windows）
+### 9.5 Ubuntu 24.04 一键部署
+
+| 脚本 | 作用 |
+|------|------|
+| `install.sh` | 检查依赖 → `npm install` → `build:renderer` → 调用 `start.sh` |
+| `start.sh` | 启动服务；**若已在运行则询问是否重启**（`y` 重启，`N` 保持） |
+| `start.sh --yes` | 已在运行则**直接重启**，不询问 |
+| `stop.sh` | 停止服务 |
+
+```bash
+git checkout webversion
+chmod +x install.sh start.sh stop.sh
+./install.sh              # 完整部署 + 启动/询问重启
+./install.sh --check      # 仅检查依赖
+./install.sh --fix-deps   # sudo apt 安装缺失系统包
+./install.sh --no-start   # 只构建，不启动
+
+./start.sh                # 单独启动或交互式重启
+./stop.sh                 # 单独停止
+```
+
+生产访问：`http://<主机IP>:3001`（环境变量 `API_PORT` 可改端口）。
+
+### 9.6 Windows 11 一键部署
+
+| 脚本 | 作用 |
+|------|------|
+| `install.bat` | 检查依赖 → 构建 → 调用 `start.bat` |
+| `start.bat` | 启动；**若已在运行则询问是否重启** |
+| `start.bat --yes` | 已在运行则直接重启 |
+| `stop.bat` | 停止服务 |
+
+```bat
+git checkout webversion
+install.bat
+install.bat --check
+install.bat --fix-deps
+install.bat --no-start
+
+start.bat
+start.bat --yes
+stop.bat
+```
+
+生产访问：`http://127.0.0.1:3001`（`set API_PORT=8080` 后执行）。
+
+### 9.7 端口占用处理（开发环境）
 
 ```powershell
 Get-NetTCPConnection -LocalPort 1212,3001 -ErrorAction SilentlyContinue |

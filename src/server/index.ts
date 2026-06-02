@@ -7,11 +7,27 @@ import express from 'express'
 import { createServer } from 'http'
 import { enableMapSet } from 'immer'
 import { join } from 'path'
-import { WebSocketServer } from 'ws'
+import { type RawData, WebSocketServer } from 'ws'
 
 enableMapSet()
 
 const API_PORT = Number(process.env.API_PORT || 3001)
+
+function decodeRawMessage(raw: RawData): string {
+  if (typeof raw === 'string') return raw
+  if (Buffer.isBuffer(raw)) return raw.toString('utf8')
+  if (Array.isArray(raw)) {
+    let offset = 0
+    const buffers = raw.map((chunk) => (Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as unknown as ArrayBuffer)))
+    const merged = Buffer.alloc(buffers.reduce((sum, buf) => sum + buf.length, 0))
+    for (const buf of buffers) {
+      merged.set(buf, offset)
+      offset += buf.length
+    }
+    return merged.toString('utf8')
+  }
+  return Buffer.from(raw as unknown as ArrayBuffer).toString('utf8')
+}
 
 function bootstrap(): void {
   new UserService()
@@ -55,12 +71,7 @@ function bootstrap(): void {
 
     socket.on('message', (raw) => {
       try {
-        const message = Buffer.isBuffer(raw)
-          ? raw.toString('utf8')
-          : typeof raw === 'string'
-            ? raw
-            : Buffer.concat(raw).toString('utf8')
-        const payload = JSON.parse(message) as { type: string; args?: unknown[] }
+        const payload = JSON.parse(decodeRawMessage(raw)) as { type: string; args?: unknown[] }
         apiBridge.handleWebSocketMessage(socket, payload)
       } catch (error) {
         console.error('Invalid websocket message:', error)
