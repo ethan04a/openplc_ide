@@ -911,11 +911,23 @@ const runCompileStream = (
   callback: (args: any) => void,
 ) => {
   const socket = ensureWebSocket()
+  let hasReceivedMessage = false
+  let hasStarted = false
+  let startupTimer: number | null = null
+
+  const stopStartupTimer = () => {
+    if (startupTimer) {
+      window.clearTimeout(startupTimer)
+      startupTimer = null
+    }
+  }
 
   const handleMessage = (event: MessageEvent) => {
     try {
       const payload = JSON.parse(String(event.data)) as { type: string; data?: unknown }
       if (payload.type === 'compile-message') {
+        hasReceivedMessage = true
+        stopStartupTimer()
         callback(deserializeFromTransport(payload.data))
       }
     } catch (error) {
@@ -923,9 +935,43 @@ const runCompileStream = (
     }
   }
 
+  const handleError = () => {
+    stopStartupTimer()
+    callback({
+      logLevel: 'error',
+      message: 'Compilation log stream failed. Check that /api/ws is reachable from this browser.',
+      closePort: true,
+    })
+  }
+
+  const handleClose = () => {
+    stopStartupTimer()
+    if (!hasReceivedMessage) {
+      callback({
+        logLevel: 'error',
+        message: 'Compilation log stream closed before any logs were received.',
+        closePort: true,
+      })
+    }
+  }
+
   const start = () => {
-    socket.send(JSON.stringify({ type, args: serializeForTransport(compileArgs) }))
+    if (hasStarted) return
+    hasStarted = true
     socket.addEventListener('message', handleMessage)
+    socket.addEventListener('error', handleError, { once: true })
+    socket.addEventListener('close', handleClose, { once: true })
+    socket.send(JSON.stringify({ type, args: serializeForTransport(compileArgs) }))
+    startupTimer = window.setTimeout(() => {
+      if (!hasReceivedMessage) {
+        callback({
+          logLevel: 'error',
+          message:
+            'No compilation logs received after 10 seconds. Check the Linux server websocket/proxy configuration.',
+          closePort: true,
+        })
+      }
+    }, 10000)
   }
 
   if (socket.readyState === WebSocket.OPEN) {
@@ -935,7 +981,10 @@ const runCompileStream = (
   }
 
   return () => {
+    stopStartupTimer()
     socket.removeEventListener('message', handleMessage)
+    socket.removeEventListener('error', handleError)
+    socket.removeEventListener('close', handleClose)
   }
 }
 

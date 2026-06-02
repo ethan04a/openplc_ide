@@ -228,12 +228,11 @@ deploy() {
 
   check_binaries
 
-  if [[ ! -f "$ROOT_DIR/release/app/dist/renderer/index.html" ]]; then
-    info "npm run build:renderer（首次含 Monaco，约 1–3 分钟）..."
-    npm run build:renderer
-  else
-    info "检测到已有前端构建产物，跳过 build:renderer（删除 release/app/dist 可强制重建）"
-  fi
+  info "清理旧前端构建产物..."
+  rm -rf "$ROOT_DIR/release/app/dist/renderer"
+
+  info "npm run build:renderer（生成最新前端资源，约 1–3 分钟）..."
+  npm run build:renderer
 
   if [[ ! -f "$ROOT_DIR/release/app/dist/renderer/index.html" ]]; then
     err "前端构建失败: release/app/dist/renderer/index.html 不存在"
