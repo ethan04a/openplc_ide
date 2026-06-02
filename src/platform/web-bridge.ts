@@ -1,33 +1,9 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { deserializeFromTransport, serializeForTransport } from '@root/shared/platform/json-serialization'
 import { CreatePouFileProps, PouServiceResponse } from '@root/types/IPC/pou-service'
-import {
-  CreateProjectFileProps,
-  IProjectServiceResponse,
-  projectDefaultFilesMapSchema,
-} from '@root/types/IPC/project-service'
+import { CreateProjectFileProps, IProjectServiceResponse } from '@root/types/IPC/project-service'
 import { IDataToWrite, ISaveDataResponse } from '@root/types/IPC/save-data'
-import { DeviceConfiguration, DevicePin } from '@root/types/PLC/devices'
-import {
-  PLCPou,
-  PLCPouSchema,
-  PLCProject,
-  PLCRemoteDevice,
-  PLCRemoteDeviceSchema,
-  PLCServer,
-  PLCServerSchema,
-} from '@root/types/PLC/open-plc'
 import { RuntimeLogEntry } from '@root/types/PLC/runtime-logs'
-import { getDefaultSchemaValues } from '@root/utils/default-zod-schema-values'
-import { getExtensionFromLanguage } from '@root/utils/PLC/pou-file-extensions'
-import {
-  detectLanguageFromExtension,
-  parseGraphicalPouFromString,
-  parseHybridPouFromString,
-  parseTextualPouFromString,
-} from '@root/utils/PLC/pou-text-parser'
-import { serializePouToText } from '@root/utils/PLC/pou-text-serializer'
-import JSZip from 'jszip'
 
 import type { ProjectState } from '../renderer/store/slices/project/types'
 
@@ -41,789 +17,22 @@ const eventListeners = new Map<string, Set<BridgeCallback>>()
 let ws: WebSocket | null = null
 let wsReconnectTimer: number | null = null
 
-type BrowserFileSystemDirectoryHandle = {
-  name: string
-  kind: 'directory'
-  entries(): AsyncIterableIterator<[string, BrowserFileSystemHandle]>
-  getDirectoryHandle(name: string, options?: { create?: boolean }): Promise<BrowserFileSystemDirectoryHandle>
-  getFileHandle(name: string, options?: { create?: boolean }): Promise<BrowserFileSystemFileHandle>
-  removeEntry(name: string, options?: { recursive?: boolean }): Promise<void>
-}
+const isDeprecatedBrowserProjectPath = (path: string): boolean => /^browser-(fs|upload|download):\/\//.test(path)
 
-type BrowserFileSystemFileHandle = {
-  name: string
-  kind: 'file'
-  getFile(): Promise<File>
-  createWritable(): Promise<{
-    write(data: string): Promise<void>
-    close(): Promise<void>
-  }>
-}
-
-type BrowserFileSystemHandle = BrowserFileSystemDirectoryHandle | BrowserFileSystemFileHandle
-
-type BrowserWindow = Window & {
-  showDirectoryPicker?: (options?: {
-    id?: string
-    mode?: 'read' | 'readwrite'
-  }) => Promise<BrowserFileSystemDirectoryHandle>
-}
-
-const browserProjectDirectories = new Map<string, BrowserFileSystemDirectoryHandle>()
-const browserProjectFileSelections = new Map<string, File[]>()
-let browserProjectId = 0
-
-const isBrowserProjectPath = (path: string): boolean => path.startsWith('browser-fs://')
-const isBrowserUploadProjectPath = (path: string): boolean => path.startsWith('browser-upload://')
-const isBrowserDownloadProjectPath = (path: string): boolean => path.startsWith('browser-download://')
-
-const unsupportedBrowserFsResponse = {
+const localhostProjectAccessResponse = {
   success: false,
   error: {
-    title: 'Browser filesystem is not supported',
-    description: 'Use a browser that supports local directory access, such as Chrome or Edge.',
+    title: 'Local project access requires localhost',
+    description: 'Open this editor from localhost on the machine running the service to access PLC project files.',
     error: null,
   },
 }
 
-const normalizeBrowserRelativePath = (path: string): string => path.replaceAll('\\', '/').replace(/^\/+/, '')
-
-const getBrowserProjectRoot = (path: string): { rootPath: string; relativePath: string } | null => {
-  if (!isBrowserProjectPath(path)) return null
-  const withoutScheme = path.slice('browser-fs://'.length)
-  const [rootId, ...relativeParts] = withoutScheme.split('/')
-  const rootPath = `browser-fs://${rootId}`
-  return {
-    rootPath,
-    relativePath: normalizeBrowserRelativePath(relativeParts.join('/')),
-  }
-}
-
-const getBrowserProjectDirectory = (path: string): BrowserFileSystemDirectoryHandle | null => {
-  const root = getBrowserProjectRoot(path)
-  return root ? browserProjectDirectories.get(root.rootPath) ?? null : null
-}
-
-const createBrowserProjectPath = (directoryName: string): string => {
-  browserProjectId += 1
-  return `browser-fs://${encodeURIComponent(directoryName)}-${browserProjectId}`
-}
-
-const createBrowserUploadProjectPath = (directoryName: string): string => {
-  browserProjectId += 1
-  return `browser-upload://${encodeURIComponent(directoryName)}-${browserProjectId}`
-}
-
-const createBrowserDownloadProjectPath = (): string => {
-  browserProjectId += 1
-  return `browser-download://new-project-${browserProjectId}`
-}
-
-const getDirectoryHandleByPath = async (
-  rootHandle: BrowserFileSystemDirectoryHandle,
-  relativePath: string,
-  create = false,
-): Promise<BrowserFileSystemDirectoryHandle> => {
-  const parts = normalizeBrowserRelativePath(relativePath).split('/').filter(Boolean)
-  let current = rootHandle
-  for (const part of parts) {
-    current = await current.getDirectoryHandle(part, { create })
-  }
-  return current
-}
-
-const getFileHandleByPath = async (
-  rootHandle: BrowserFileSystemDirectoryHandle,
-  relativePath: string,
-  create = false,
-): Promise<BrowserFileSystemFileHandle> => {
-  const normalizedPath = normalizeBrowserRelativePath(relativePath)
-  const parts = normalizedPath.split('/').filter(Boolean)
-  const fileName = parts.pop()
-  if (!fileName) throw new Error('File path is empty')
-  const directory = await getDirectoryHandleByPath(rootHandle, parts.join('/'), create)
-  return directory.getFileHandle(fileName, { create })
-}
-
-const writeBrowserFile = async (
-  rootHandle: BrowserFileSystemDirectoryHandle,
-  relativePath: string,
-  content: string,
-): Promise<void> => {
-  const fileHandle = await getFileHandleByPath(rootHandle, relativePath, true)
-  const writable = await fileHandle.createWritable()
-  await writable.write(content)
-  await writable.close()
-}
-
-const readBrowserFileText = async (
-  rootHandle: BrowserFileSystemDirectoryHandle,
-  relativePath: string,
-): Promise<string> => {
-  const fileHandle = await getFileHandleByPath(rootHandle, relativePath)
-  return (await fileHandle.getFile()).text()
-}
-
-const browserDirectoryIsEmpty = async (directoryHandle: BrowserFileSystemDirectoryHandle): Promise<boolean> => {
-  for await (const _entry of directoryHandle.entries()) {
-    return false
-  }
-  return true
-}
-
-const safeReadBrowserJson = async <T>(
-  rootHandle: BrowserFileSystemDirectoryHandle,
-  relativePath: string,
-  fallback: T,
-): Promise<T> => {
-  try {
-    return JSON.parse(await readBrowserFileText(rootHandle, relativePath)) as T
-  } catch {
-    await writeBrowserFile(rootHandle, relativePath, JSON.stringify(fallback, null, 2))
-    return fallback
-  }
-}
-
-const defineBrowserPou = (language: CreateProjectFileProps['language']): PLCPou => ({
-  type: 'program',
-  data: {
-    name: 'main',
-    language,
-    variables: [],
-    documentation: '',
-    body:
-      language === 'ld'
-        ? { language, value: { name: 'main', rungs: [] } }
-        : language === 'fbd'
-          ? {
-              language,
-              value: {
-                name: 'main',
-                rung: {
-                  comment: '',
-                  edges: [],
-                  nodes: [],
-                },
-              },
-            }
-          : { language, value: '' },
-  },
-})
-
-const createBrowserProjectFile = (data: CreateProjectFileProps): PLCProject => ({
-  meta: {
-    name: data.name,
-    type: data.type,
-  },
-  data: {
-    pous: [],
-    dataTypes: [],
-    configuration: {
-      resource: {
-        tasks: [
-          {
-            name: 'task0',
-            triggering: 'Cyclic',
-            interval: data.time,
-            priority: 1,
-          },
-        ],
-        instances: [
-          {
-            name: 'instance0',
-            program: 'main',
-            task: 'task0',
-          },
-        ],
-        globalVariables: [],
-      },
-    },
-  },
-})
-
-const detectBrowserPouTypeFromPath = (path: string): PLCPou['type'] => {
-  const normalized = normalizeBrowserRelativePath(path)
-  if (normalized.includes('/function-blocks/')) return 'function-block'
-  if (normalized.includes('/functions/')) return 'function'
-  if (normalized.includes('/programs/')) return 'program'
-  throw new Error(`Cannot determine POU type from path: ${path}`)
-}
-
-const parseBrowserPouFile = (relativePath: string, content: string): PLCPou | null => {
-  const extension = relativePath.slice(relativePath.lastIndexOf('.'))
-
-  try {
-    if (extension === '.json') {
-      const result = PLCPouSchema.safeParse(JSON.parse(content))
-      return result.success ? result.data : null
-    }
-
-    const pouType = detectBrowserPouTypeFromPath(relativePath)
-    const language = detectLanguageFromExtension(relativePath)
-    const pou =
-      language === 'st' || language === 'il'
-        ? parseTextualPouFromString(content, language, pouType)
-        : language === 'python' || language === 'cpp'
-          ? parseHybridPouFromString(content, language, pouType)
-          : language === 'ld' || language === 'fbd'
-            ? parseGraphicalPouFromString(content, language, pouType)
-            : null
-
-    if (!pou) return null
-    const result = PLCPouSchema.safeParse(pou)
-    return result.success ? result.data : null
-  } catch {
-    return null
-  }
-}
-
-const readBrowserPous = async (
-  directoryHandle: BrowserFileSystemDirectoryHandle,
-  basePath = '',
-): Promise<Array<{ path: string; pou: PLCPou }>> => {
-  const pous: Array<{ path: string; pou: PLCPou }> = []
-  for await (const [name, handle] of directoryHandle.entries()) {
-    const relativePath = normalizeBrowserRelativePath(`${basePath}/${name}`)
-    if (handle.kind === 'directory') {
-      pous.push(...(await readBrowserPous(handle, relativePath)))
-      continue
-    }
-
-    if (!['.st', '.il', '.ld', '.fbd', '.py', '.cpp', '.json'].some((ext) => name.endsWith(ext))) {
-      continue
-    }
-
-    const content = await (await handle.getFile()).text()
-    const pou = parseBrowserPouFile(relativePath, content)
-    if (pou) {
-      pous.push({ path: relativePath, pou })
-    }
-  }
-  return pous
-}
-
-const readBrowserJsonDirectory = async <T>(
-  rootHandle: BrowserFileSystemDirectoryHandle,
-  relativePath: string,
-  schema: { safeParse: (data: unknown) => { success: boolean; data?: T } },
-): Promise<T[]> => {
-  try {
-    const directory = await getDirectoryHandleByPath(rootHandle, relativePath)
-    const values: T[] = []
-    for await (const [name, handle] of directory.entries()) {
-      if (handle.kind !== 'file' || !name.endsWith('.json')) continue
-      try {
-        const result = schema.safeParse(JSON.parse(await (await handle.getFile()).text()))
-        if (result.success && result.data) values.push(result.data)
-      } catch {
-        // Skip invalid files, matching the server-side project reader.
-      }
-    }
-    return values
-  } catch {
-    return []
-  }
-}
-
-const getFileRelativePath = (file: File): string => {
-  const fileWithRelativePath = file as File & { webkitRelativePath?: string }
-  return normalizeBrowserRelativePath(fileWithRelativePath.webkitRelativePath || file.name)
-}
-
-const stripSelectedDirectoryName = (path: string): string => {
-  const parts = normalizeBrowserRelativePath(path).split('/').filter(Boolean)
-  return parts.length > 1 ? parts.slice(1).join('/') : parts.join('/')
-}
-
-const pickBrowserProjectFiles = async (): Promise<{ path: string; files: File[] } | null> =>
-  new Promise((resolve, reject) => {
-    const input = document.createElement('input')
-    input.type = 'file'
-    input.multiple = true
-    input.style.display = 'none'
-    input.setAttribute('webkitdirectory', '')
-    input.setAttribute('directory', '')
-
-    input.onchange = () => {
-      const files = Array.from(input.files ?? [])
-      input.remove()
-
-      if (files.length === 0) {
-        resolve(null)
-        return
-      }
-
-      const firstRelativePath = getFileRelativePath(files[0])
-      const directoryName = firstRelativePath.split('/').filter(Boolean)[0] || 'project'
-      const path = createBrowserUploadProjectPath(directoryName)
-      browserProjectFileSelections.set(path, files)
-      resolve({ path, files })
-    }
-
-    input.onerror = () => {
-      input.remove()
-      reject(new Error('Unable to open directory picker'))
-    }
-
-    document.body.appendChild(input)
-    input.click()
-  })
-
-const readUploadedTextFile = async (filesByPath: Map<string, File>, relativePath: string): Promise<string> => {
-  const file = filesByPath.get(normalizeBrowserRelativePath(relativePath))
-  if (!file) throw new Error(`${relativePath} was not found in the selected directory`)
-  return file.text()
-}
-
-const safeReadUploadedJson = async <T>(
-  filesByPath: Map<string, File>,
-  relativePath: string,
-  fallback: T,
-): Promise<T> => {
-  try {
-    return JSON.parse(await readUploadedTextFile(filesByPath, relativePath)) as T
-  } catch {
-    return fallback
-  }
-}
-
-const readUploadedJsonDirectory = async <T>(
-  filesByPath: Map<string, File>,
-  relativeDirectory: string,
-  schema: { safeParse: (data: unknown) => { success: boolean; data?: T } },
-): Promise<T[]> => {
-  const values: T[] = []
-  const normalizedDirectory = normalizeBrowserRelativePath(relativeDirectory)
-
-  for (const [relativePath, file] of filesByPath) {
-    if (!relativePath.startsWith(`${normalizedDirectory}/`) || !relativePath.endsWith('.json')) continue
-
-    try {
-      const result = schema.safeParse(JSON.parse(await file.text()))
-      if (result.success && result.data) values.push(result.data)
-    } catch {
-      // Skip invalid files, matching the server-side project reader.
-    }
-  }
-
-  return values
-}
-
-const readUploadedProject = async (rootPath: string, files: File[]): Promise<IProjectServiceResponse> => {
-  const filesByPath = new Map<string, File>()
-  for (const file of files) {
-    filesByPath.set(stripSelectedDirectoryName(getFileRelativePath(file)), file)
-  }
-
-  if (!filesByPath.has('project.json')) {
-    return {
-      success: false,
-      error: {
-        title: 'Invalid project directory',
-        description: 'project.json was not found in the selected directory.',
-        error: null,
-      },
-    }
-  }
-
-  const project = await safeReadUploadedJson<PLCProject>(
-    filesByPath,
-    'project.json',
-    getDefaultSchemaValues(projectDefaultFilesMapSchema['project.json']) as PLCProject,
-  )
-  const deviceConfiguration = await safeReadUploadedJson<DeviceConfiguration>(
-    filesByPath,
-    'devices/configuration.json',
-    getDefaultSchemaValues(projectDefaultFilesMapSchema['devices/configuration.json']) as DeviceConfiguration,
-  )
-  deviceConfiguration.communicationConfiguration.modbusRTU.rtuBaudRate ||= '115200'
-  const devicePinMapping = await safeReadUploadedJson<DevicePin[]>(
-    filesByPath,
-    'devices/pin-mapping.json',
-    getDefaultSchemaValues(projectDefaultFilesMapSchema['devices/pin-mapping.json']) as DevicePin[],
-  )
-
-  const seenPous = new Set<string>()
-  const pous: PLCPou[] = []
-  for (const [relativePath, file] of [...filesByPath].sort(([a], [b]) => {
-    const aIsJson = a.endsWith('.json')
-    const bIsJson = b.endsWith('.json')
-    return aIsJson === bIsJson ? 0 : aIsJson ? 1 : -1
-  })) {
-    if (!relativePath.startsWith('pous/')) continue
-    if (!['.st', '.il', '.ld', '.fbd', '.py', '.cpp', '.json'].some((ext) => relativePath.endsWith(ext))) continue
-
-    const pou = parseBrowserPouFile(relativePath, await file.text())
-    if (!pou) continue
-
-    const key = `${pou.type}:${pou.data.name}`
-    if (seenPous.has(key)) continue
-    seenPous.add(key)
-    pous.push(pou)
-  }
-
-  const servers = await readUploadedJsonDirectory<PLCServer>(filesByPath, 'devices/servers', PLCServerSchema)
-  const remoteDevices = await readUploadedJsonDirectory<PLCRemoteDevice>(
-    filesByPath,
-    'devices/remote',
-    PLCRemoteDeviceSchema,
-  )
-
-  return {
-    success: true,
-    data: {
-      meta: { path: rootPath },
-      content: {
-        project,
-        pous,
-        deviceConfiguration,
-        devicePinMapping,
-        servers,
-        remoteDevices,
-      },
-    },
-  }
-}
-
-const readBrowserProject = async (
-  rootPath: string,
-  rootHandle: BrowserFileSystemDirectoryHandle,
-): Promise<IProjectServiceResponse> => {
-  try {
-    await rootHandle.getFileHandle('project.json')
-  } catch {
-    return {
-      success: false,
-      error: {
-        title: 'Invalid project directory',
-        description: 'project.json was not found in the selected directory.',
-        error: null,
-      },
-    }
-  }
-
-  const project = await safeReadBrowserJson<PLCProject>(
-    rootHandle,
-    'project.json',
-    getDefaultSchemaValues(projectDefaultFilesMapSchema['project.json']) as PLCProject,
-  )
-  const deviceConfiguration = await safeReadBrowserJson<DeviceConfiguration>(
-    rootHandle,
-    'devices/configuration.json',
-    getDefaultSchemaValues(projectDefaultFilesMapSchema['devices/configuration.json']) as DeviceConfiguration,
-  )
-  deviceConfiguration.communicationConfiguration.modbusRTU.rtuBaudRate ||= '115200'
-  const devicePinMapping = await safeReadBrowserJson<DevicePin[]>(
-    rootHandle,
-    'devices/pin-mapping.json',
-    getDefaultSchemaValues(projectDefaultFilesMapSchema['devices/pin-mapping.json']) as DevicePin[],
-  )
-
-  let pous: PLCPou[] = []
-  try {
-    const pouDirectory = await rootHandle.getDirectoryHandle('pous')
-    const pouFiles = await readBrowserPous(pouDirectory, 'pous')
-    const seen = new Set<string>()
-    pous = pouFiles
-      .sort((a, b) => (a.path.endsWith('.json') === b.path.endsWith('.json') ? 0 : a.path.endsWith('.json') ? 1 : -1))
-      .filter(({ pou }) => {
-        const key = `${pou.type}:${pou.data.name}`
-        if (seen.has(key)) return false
-        seen.add(key)
-        return true
-      })
-      .map(({ pou }) => pou)
-  } catch {
-    pous = []
-  }
-
-  const servers = await readBrowserJsonDirectory<PLCServer>(rootHandle, 'devices/servers', PLCServerSchema)
-  const remoteDevices = await readBrowserJsonDirectory<PLCRemoteDevice>(
-    rootHandle,
-    'devices/remote',
-    PLCRemoteDeviceSchema,
-  )
-
-  return {
-    success: true,
-    data: {
-      meta: { path: rootPath },
-      content: {
-        project,
-        pous,
-        deviceConfiguration,
-        devicePinMapping,
-        servers,
-        remoteDevices,
-      },
-    },
-  }
-}
-
-const pickBrowserProjectDirectory = async (mode: 'read' | 'readwrite') => {
-  const picker = (window as BrowserWindow).showDirectoryPicker
-  if (!picker) return null
-  const handle = await picker({ id: 'openplc-project', mode })
-  const path = createBrowserProjectPath(handle.name)
-  browserProjectDirectories.set(path, handle)
-  return { path, handle }
-}
-
-const createBrowserProject = async (data: CreateProjectFileProps): Promise<IProjectServiceResponse> => {
-  const rootHandle = getBrowserProjectDirectory(data.path)
-  if (!rootHandle && !isBrowserDownloadProjectPath(data.path)) return invoke('project:create', data)
-
-  const project = createBrowserProjectFile(data)
-  const pou = defineBrowserPou(data.language)
-  const deviceConfiguration = getDefaultSchemaValues(
-    projectDefaultFilesMapSchema['devices/configuration.json'],
-  ) as DeviceConfiguration
-  deviceConfiguration.communicationConfiguration.modbusRTU.rtuBaudRate = '115200'
-  const devicePinMapping = getDefaultSchemaValues(
-    projectDefaultFilesMapSchema['devices/pin-mapping.json'],
-  ) as DevicePin[]
-  const pouExtension = getExtensionFromLanguage(pou.data.body.language)
-
-  if (rootHandle) {
-    await getDirectoryHandleByPath(rootHandle, 'devices/servers', true)
-    await getDirectoryHandleByPath(rootHandle, 'devices/remote', true)
-    await getDirectoryHandleByPath(rootHandle, 'pous/programs', true)
-    await getDirectoryHandleByPath(rootHandle, 'pous/functions', true)
-    await getDirectoryHandleByPath(rootHandle, 'pous/function-blocks', true)
-    await writeBrowserFile(rootHandle, 'project.json', JSON.stringify(project, null, 2))
-    await writeBrowserFile(rootHandle, 'devices/configuration.json', JSON.stringify(deviceConfiguration, null, 2))
-    await writeBrowserFile(rootHandle, 'devices/pin-mapping.json', JSON.stringify(devicePinMapping, null, 2))
-    await writeBrowserFile(rootHandle, `pous/programs/${pou.data.name}${pouExtension}`, serializePouToText(pou))
-  }
-
-  return {
-    success: true,
-    data: {
-      meta: { path: data.path },
-      content: {
-        project,
-        pous: [pou],
-        deviceConfiguration,
-        devicePinMapping,
-      },
-    },
-  }
-}
-
-const saveBrowserProject = async ({ projectPath, content }: IDataToWrite): Promise<ISaveDataResponse> => {
-  const rootHandle = getBrowserProjectDirectory(projectPath)
-  if (!rootHandle) {
-    if (isBrowserUploadProjectPath(projectPath) || isBrowserDownloadProjectPath(projectPath)) {
-      await downloadProjectZip(projectPath, content)
-      return { success: true, message: 'Project downloaded successfully' }
-    }
-    return invoke('project:save', { projectPath, content })
-  }
-
-  await writeBrowserFile(rootHandle, 'project.json', JSON.stringify(content.projectData, null, 2))
-  await writeBrowserFile(rootHandle, 'devices/configuration.json', JSON.stringify(content.deviceConfiguration, null, 2))
-  await writeBrowserFile(rootHandle, 'devices/pin-mapping.json', JSON.stringify(content.devicePinMapping, null, 2))
-
-  for (const pou of content.pous) {
-    const typeDir =
-      pou.type === 'function' ? 'functions' : pou.type === 'function-block' ? 'function-blocks' : 'programs'
-    const extension = getExtensionFromLanguage(pou.data.body.language)
-    await writeBrowserFile(rootHandle, `pous/${typeDir}/${pou.data.name}${extension}`, serializePouToText(pou))
-  }
-
-  return { success: true, message: 'Project saved successfully' }
-}
-
-const downloadProjectZip = async (projectPath: string, content: IDataToWrite['content']): Promise<void> => {
-  const zip = new JSZip()
-  const projectName =
-    content.projectData.meta.name ||
-    projectPath.replace(/^browser-upload:\/\//, '').replace(/^browser-download:\/\//, '') ||
-    'openplc-project'
-
-  zip.file('project.json', JSON.stringify(content.projectData, null, 2))
-  zip.file('devices/configuration.json', JSON.stringify(content.deviceConfiguration, null, 2))
-  zip.file('devices/pin-mapping.json', JSON.stringify(content.devicePinMapping, null, 2))
-
-  for (const pou of content.pous) {
-    const typeDir =
-      pou.type === 'function' ? 'functions' : pou.type === 'function-block' ? 'function-blocks' : 'programs'
-    const extension = getExtensionFromLanguage(pou.data.body.language)
-    zip.file(`pous/${typeDir}/${pou.data.name}${extension}`, serializePouToText(pou))
-  }
-
-  const blob = await zip.generateAsync({ type: 'blob' })
-  const url = URL.createObjectURL(blob)
-  const anchor = document.createElement('a')
-  anchor.href = url
-  anchor.download = `${projectName}.zip`
-  anchor.click()
-  URL.revokeObjectURL(url)
-}
-
-const saveBrowserFile = async (filePath: string, content: unknown): Promise<{ success: boolean; error?: string }> => {
-  const root = getBrowserProjectRoot(filePath)
-  const rootHandle = getBrowserProjectDirectory(filePath)
-  if (!root || !rootHandle) {
-    if (isBrowserUploadProjectPath(filePath) || isBrowserDownloadProjectPath(filePath)) {
-      const isPou = typeof content === 'object' && content !== null && 'type' in content && 'data' in content
-      const filename =
-        filePath
-          .split('/')
-          .pop()
-          ?.replace(/\.json$/, '') || 'openplc-file'
-      const fileContent = isPou ? serializePouToText(content as PLCPou) : JSON.stringify(content, null, 2)
-      triggerDownload(filename, fileContent)
-      return { success: true }
-    }
-    return invoke('project:save-file', filePath, content)
-  }
-
-  try {
-    const isPou = typeof content === 'object' && content !== null && 'type' in content && 'data' in content
-    if (isPou) {
-      const pou = content as PLCPou
-      const path = root.relativePath.endsWith('.json')
-        ? root.relativePath.replace(/\.json$/, getExtensionFromLanguage(pou.data.body.language))
-        : root.relativePath
-      await writeBrowserFile(rootHandle, path, serializePouToText(pou))
-    } else {
-      await writeBrowserFile(rootHandle, root.relativePath, JSON.stringify(content, null, 2))
-    }
-    return { success: true }
-  } catch (error) {
-    return { success: false, error: error instanceof Error ? error.message : String(error) }
-  }
-}
-
-const createBrowserPouFile = async (props: CreatePouFileProps): Promise<PouServiceResponse> => {
-  const root = getBrowserProjectRoot(props.path)
-  const rootHandle = getBrowserProjectDirectory(props.path)
-  if (isBrowserUploadProjectPath(props.path) || isBrowserDownloadProjectPath(props.path)) return { success: true }
-  if (!root || !rootHandle) return invoke('pou:create', props)
-
-  try {
-    const path = root.relativePath.endsWith('.json')
-      ? root.relativePath.replace(/\.json$/, getExtensionFromLanguage(props.pou.data.body.language))
-      : root.relativePath
-    await writeBrowserFile(rootHandle, path, serializePouToText(props.pou))
-    return { success: true }
-  } catch (error) {
-    return {
-      success: false,
-      error: {
-        title: 'Error creating POU file',
-        description: error instanceof Error ? error.message : String(error),
-        error,
-      },
-    }
-  }
-}
-
-const deleteBrowserPouFile = async (filePath: string): Promise<PouServiceResponse> => {
-  const root = getBrowserProjectRoot(filePath)
-  const rootHandle = getBrowserProjectDirectory(filePath)
-  if (isBrowserUploadProjectPath(filePath) || isBrowserDownloadProjectPath(filePath)) return { success: true }
-  if (!root || !rootHandle) return invoke('pou:delete', filePath)
-
-  try {
-    const normalizedPath = root.relativePath
-    const parts = normalizedPath.split('/').filter(Boolean)
-    const fileName = parts.pop()
-    if (!fileName) throw new Error('File path is empty')
-    const directory = await getDirectoryHandleByPath(rootHandle, parts.join('/'))
-
-    if (fileName.endsWith('.json')) {
-      const baseName = fileName.slice(0, -'.json'.length)
-      for await (const [entryName, handle] of directory.entries()) {
-        if (handle.kind === 'file' && entryName.replace(/\.[^.]+$/, '') === baseName) {
-          await directory.removeEntry(entryName)
-        }
-      }
-    } else {
-      await directory.removeEntry(fileName)
-    }
-
-    return { success: true }
-  } catch (error) {
-    return {
-      success: false,
-      error: {
-        title: 'Error deleting POU file',
-        description: error instanceof Error ? error.message : String(error),
-        error,
-      },
-    }
-  }
-}
-
-const renameBrowserPouFile = async (data: {
-  filePath: string
-  newFileName: string
-  fileContent?: unknown
-}): Promise<PouServiceResponse> => {
-  const root = getBrowserProjectRoot(data.filePath)
-  const rootHandle = getBrowserProjectDirectory(data.filePath)
-  if (isBrowserUploadProjectPath(data.filePath) || isBrowserDownloadProjectPath(data.filePath)) return { success: true }
-  if (!root || !rootHandle) return invoke('pou:rename', data)
-
-  try {
-    await deleteBrowserPouFile(data.filePath)
-    if (!data.fileContent) return { success: true }
-
-    const pou = data.fileContent as PLCPou
-    const parts = root.relativePath.split('/').filter(Boolean)
-    parts.pop()
-    const baseName = data.newFileName.replace(/\.json$/, '')
-    const extension = getExtensionFromLanguage(pou.data.body.language)
-    await writeBrowserFile(rootHandle, `${parts.join('/')}/${baseName}${extension}`, serializePouToText(pou))
-    return { success: true }
-  } catch (error) {
-    return {
-      success: false,
-      error: {
-        title: 'Error renaming POU file',
-        description: error instanceof Error ? error.message : String(error),
-        error,
-      },
-    }
-  }
-}
-
-const readBrowserFileContent = async (
-  filePath: string,
-): Promise<{ success: boolean; content?: string; error?: string }> => {
-  if (isBrowserDownloadProjectPath(filePath)) {
-    return {
-      success: false,
-      error: 'This project exists in browser memory only. Save the project to download its files.',
-    }
-  }
-
-  if (isBrowserUploadProjectPath(filePath)) {
-    const uploadRoot = filePath.slice('browser-upload://'.length).split('/')[0]
-    const rootPath = `browser-upload://${uploadRoot}`
-    const relativePath = normalizeBrowserRelativePath(filePath.slice(rootPath.length))
-    const files = browserProjectFileSelections.get(rootPath)
-
-    if (!files) {
-      return { success: false, error: 'Project files are no longer available. Open the project directory again.' }
-    }
-
-    const match = files.find((file) => stripSelectedDirectoryName(getFileRelativePath(file)) === relativePath)
-    if (!match) return { success: false, error: `${relativePath} was not found in the selected directory` }
-    return { success: true, content: await match.text() }
-  }
-
-  const root = getBrowserProjectRoot(filePath)
-  const rootHandle = getBrowserProjectDirectory(filePath)
-  if (!root || !rootHandle) return invoke('file:read-content', filePath)
-
-  try {
-    return { success: true, content: await readBrowserFileText(rootHandle, root.relativePath) }
-  } catch (error) {
-    return { success: false, error: error instanceof Error ? error.message : String(error) }
-  }
+const isLocalhostAccess = (): boolean => ['localhost', '127.0.0.1', '::1', '[::1]'].includes(window.location.hostname)
+
+const invokeLocalProjectAccess = <T>(factory: () => Promise<T>): Promise<T | typeof localhostProjectAccessResponse> => {
+  if (!isLocalhostAccess()) return Promise.resolve(localhostProjectAccessResponse)
+  return factory()
 }
 
 const emit = (channel: string, ...args: unknown[]) => {
@@ -1053,77 +262,43 @@ const webBridge = {
   aboutModalAccelerator: (callback: BridgeCallback) => on('about:open-accelerator', callback),
   closeProjectAccelerator: (callback: BridgeCallback) => on('workspace:close-project-accelerator', callback),
   closeTabAccelerator: (callback: BridgeCallback) => on('workspace:close-tab-accelerator', callback),
-  createProject: (data: CreateProjectFileProps): Promise<IProjectServiceResponse> => createBrowserProject(data),
+  createProject: (data: CreateProjectFileProps): Promise<IProjectServiceResponse> =>
+    invokeLocalProjectAccess(() => invoke('project:create', data)) as Promise<IProjectServiceResponse>,
   createProjectAccelerator: (callback: BridgeCallback) => on('project:create-accelerator', callback),
   deleteFileAccelerator: (callback: BridgeCallback) => on('workspace:delete-file-accelerator', callback),
   findInProjectAccelerator: (callback: BridgeCallback) => on('project:find-in-project-accelerator', callback),
   handleOpenProjectRequest: (callback: BridgeCallback) => on('project:open-project-request', callback),
-  openProject: async (): Promise<IProjectServiceResponse> => {
-    try {
-      const picked = await pickBrowserProjectDirectory('readwrite')
-      if (!picked) {
-        const selectedFiles = await pickBrowserProjectFiles()
-        if (!selectedFiles) {
-          return unsupportedBrowserFsResponse
-        }
-        return readUploadedProject(selectedFiles.path, selectedFiles.files)
-      }
-      return readBrowserProject(picked.path, picked.handle)
-    } catch (error) {
-      return {
-        success: false,
-        error: {
-          title: 'Error opening project',
-          description: error instanceof Error ? error.message : String(error),
-          error,
-        },
-      }
-    }
-  },
+  openProject: (): Promise<IProjectServiceResponse> =>
+    invokeLocalProjectAccess(() => invoke('project:open')) as Promise<IProjectServiceResponse>,
   openProjectByPath: (projectPath: string): Promise<IProjectServiceResponse> =>
-    isBrowserProjectPath(projectPath) ||
-    isBrowserUploadProjectPath(projectPath) ||
-    isBrowserDownloadProjectPath(projectPath)
+    isDeprecatedBrowserProjectPath(projectPath)
       ? Promise.resolve({
           success: false,
           error: {
-            title: 'Project directory permission is no longer available',
-            description: 'Open the project directory again from this browser.',
+            title: 'Project path is no longer supported',
+            description: 'Open the project from localhost so the editor can use the real project path.',
             error: null,
           },
         })
-      : invoke('project:open-by-path', projectPath),
+      : (invokeLocalProjectAccess(() =>
+          invoke('project:open-by-path', projectPath),
+        ) as Promise<IProjectServiceResponse>),
   openRecentAccelerator: (callback: BridgeCallback) => on('project:open-recent-accelerator', callback),
   pathPicker: async (): Promise<{
     success: boolean
     error?: { title: string; description: string }
     path?: string
   }> => {
-    try {
-      const picked = await pickBrowserProjectDirectory('readwrite')
-      if (!picked) {
-        return { success: true, path: createBrowserDownloadProjectPath() }
-      }
-      if (!(await browserDirectoryIsEmpty(picked.handle))) {
-        browserProjectDirectories.delete(picked.path)
-        return {
-          success: false,
-          error: {
-            title: 'Directory is not empty',
-            description: 'Choose an empty directory for the new project.',
-          },
-        }
-      }
-      return { success: true, path: picked.path }
-    } catch (error) {
+    if (!isLocalhostAccess()) {
       return {
         success: false,
         error: {
-          title: 'Error selecting directory',
-          description: error instanceof Error ? error.message : String(error),
+          title: localhostProjectAccessResponse.error.title,
+          description: localhostProjectAccessResponse.error.description,
         },
       }
     }
+    return invoke('project:path-picker')
   },
   removeCloseProjectListener: () => removeAllListeners('workspace:close-project-accelerator'),
   removeCloseTabListener: () => removeAllListeners('workspace:close-tab-accelerator'),
@@ -1134,19 +309,19 @@ const webBridge = {
   removeSaveFileAccelerator: () => removeAllListeners('project:save-file-accelerator'),
   removeSaveProjectAccelerator: () => removeAllListeners('project:save-accelerator'),
   saveFile: (filePath: string, content: unknown): Promise<{ success: boolean; error?: string }> =>
-    saveBrowserFile(filePath, content),
+    invoke('project:save-file', filePath, content),
   saveFileAccelerator: (callback: BridgeCallback) => on('project:save-file-accelerator', callback),
-  saveProject: (dataToWrite: IDataToWrite): Promise<ISaveDataResponse> => saveBrowserProject(dataToWrite),
+  saveProject: (dataToWrite: IDataToWrite): Promise<ISaveDataResponse> => invoke('project:save', dataToWrite),
   saveProjectAccelerator: (callback: BridgeCallback) => on('project:save-accelerator', callback),
   switchPerspective: (callback: BridgeCallback) => on('workspace:switch-perspective-accelerator', callback),
 
-  createPouFile: (props: CreatePouFileProps): Promise<PouServiceResponse> => createBrowserPouFile(props),
-  deletePouFile: (filePath: string): Promise<PouServiceResponse> => deleteBrowserPouFile(filePath),
+  createPouFile: (props: CreatePouFileProps): Promise<PouServiceResponse> => invoke('pou:create', props),
+  deletePouFile: (filePath: string): Promise<PouServiceResponse> => invoke('pou:delete', filePath),
   renamePouFile: (data: {
     filePath: string
     newFileName: string
     fileContent?: unknown
-  }): Promise<PouServiceResponse> => renameBrowserPouFile(data),
+  }): Promise<PouServiceResponse> => invoke('pou:rename', data),
 
   handleUndoRequest: (callback: BridgeCallback) => on('edit:undo-request', callback),
   removeUndoRequestListener: () => removeAllListeners('edit:undo-request'),
@@ -1374,16 +549,11 @@ const webBridge = {
   },
 
   fileWatchStart: (filePath: string): Promise<{ success: boolean; error?: string }> =>
-    isBrowserProjectPath(filePath) || isBrowserUploadProjectPath(filePath) || isBrowserDownloadProjectPath(filePath)
-      ? Promise.resolve({ success: true })
-      : invoke('file:watch-start', filePath),
-  fileWatchStop: (filePath: string): Promise<{ success: boolean }> =>
-    isBrowserProjectPath(filePath) || isBrowserUploadProjectPath(filePath) || isBrowserDownloadProjectPath(filePath)
-      ? Promise.resolve({ success: true })
-      : invoke('file:watch-stop', filePath),
+    invoke('file:watch-start', filePath),
+  fileWatchStop: (filePath: string): Promise<{ success: boolean }> => invoke('file:watch-stop', filePath),
   fileWatchStopAll: (): Promise<{ success: boolean }> => invoke('file:watch-stop-all'),
   fileReadContent: (filePath: string): Promise<{ success: boolean; content?: string; error?: string }> =>
-    readBrowserFileContent(filePath),
+    invoke('file:read-content', filePath),
   onFileExternalChange: (callback: (_event: unknown, data: { filePath: string }) => void) => {
     on('file:external-change', callback)
     return () => removeAllListeners('file:external-change')
