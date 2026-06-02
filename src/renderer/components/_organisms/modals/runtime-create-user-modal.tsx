@@ -5,6 +5,13 @@ import { useState } from 'react'
 import { Label } from '../../_atoms'
 import { Modal, ModalContent, ModalTitle } from '../../_molecules/modal'
 
+const formatRuntimeError = (error: unknown, fallback: string) => {
+  if (typeof error === 'string' && error.trim()) return error
+  if (error instanceof Error) return error.message
+  if (error && typeof error === 'object') return JSON.stringify(error)
+  return fallback
+}
+
 const RuntimeCreateUserModal = () => {
   const { modals, modalActions, deviceDefinitions, deviceActions } = useOpenPLCStore()
   const [username, setUsername] = useState('')
@@ -51,13 +58,13 @@ const RuntimeCreateUserModal = () => {
           setPassword('')
           setConfirmPassword('')
         } else {
-          setError('User created but login failed: ' + (loginResult.error || 'Unknown error'))
+          setError('User created but login failed: ' + formatRuntimeError(loginResult.error, 'Unknown error'))
         }
       } else {
-        setError('Failed to create user: ' + (result.error || 'Unknown error'))
+        setError('Failed to create user: ' + formatRuntimeError(result.error, 'Unknown error'))
       }
     } catch (err) {
-      setError('Error: ' + String(err))
+      setError('Error: ' + formatRuntimeError(err, 'Unknown error'))
     } finally {
       setIsLoading(false)
     }

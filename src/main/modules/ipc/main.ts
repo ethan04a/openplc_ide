@@ -85,6 +85,27 @@ class ApiBridge {
   private readonly RUNTIME_API_PORT = 8443
   private readonly RUNTIME_CONNECTION_TIMEOUT_MS = 5000 // 5 seconds (important-comment)
 
+  private formatRuntimeApiError(data: string, statusCode?: number): string {
+    const trimmedData = data.trim()
+    const statusMessage = statusCode ? `HTTP ${statusCode}` : 'Runtime request failed'
+
+    if (!trimmedData) {
+      return statusMessage
+    }
+
+    try {
+      const parsed = JSON.parse(trimmedData) as { error?: unknown; message?: unknown; detail?: unknown }
+      const parsedMessage = parsed.error ?? parsed.message ?? parsed.detail
+      if (typeof parsedMessage === 'string' && parsedMessage.trim()) {
+        return `${statusMessage}: ${parsedMessage}`
+      }
+    } catch {
+      // Runtime responses are not always JSON; fall through to the raw body.
+    }
+
+    return `${statusMessage}: ${trimmedData}`
+  }
+
   handleRuntimeGetUsersInfo = async (ipAddress: string) => {
     try {
       const url = `https://${ipAddress}:${this.RUNTIME_API_PORT}/api/get-users-info`
@@ -150,10 +171,10 @@ class ApiBridge {
               data += chunk.toString()
             })
             res.on('end', () => {
-              if (res.statusCode === 201) {
+              if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
                 resolve({ success: true })
               } else {
-                resolve({ success: false, error: data })
+                resolve({ success: false, error: this.formatRuntimeApiError(data, res.statusCode) })
               }
             })
           },
@@ -208,7 +229,7 @@ class ApiBridge {
                   resolve({ success: false, error: 'Invalid response format' })
                 }
               } else {
-                resolve({ success: false, error: data })
+                resolve({ success: false, error: this.formatRuntimeApiError(data, res.statusCode) })
               }
             })
           },
