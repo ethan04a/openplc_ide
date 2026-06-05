@@ -34,6 +34,7 @@ export const useRuntimePolling = () => {
   const setRuntimeJwtToken = useOpenPLCStore((state) => state.deviceActions.setRuntimeJwtToken)
   const setRuntimeConnectionStatus = useOpenPLCStore((state) => state.deviceActions.setRuntimeConnectionStatus)
   const setTimingStats = useOpenPLCStore((state) => state.deviceActions.setTimingStats)
+  const setRuntimeNodeInfo = useOpenPLCStore((state) => state.deviceActions.setRuntimeNodeInfo)
   const openModal = useOpenPLCStore((state) => state.modalActions.openModal)
 
   const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -47,7 +48,8 @@ export const useRuntimePolling = () => {
     setRuntimeConnectionStatus('disconnected')
     setPlcRuntimeStatus(null)
     setTimingStats(null)
-  }, [setRuntimeJwtToken, setRuntimeConnectionStatus, setPlcRuntimeStatus, setTimingStats])
+    setRuntimeNodeInfo(null)
+  }, [setRuntimeJwtToken, setRuntimeConnectionStatus, setPlcRuntimeStatus, setTimingStats, setRuntimeNodeInfo])
 
   // Handle connection loss after max failures
   const handleConnectionLost = useCallback(() => {
@@ -109,10 +111,12 @@ export const useRuntimePolling = () => {
 
       // Fetch status and logs in parallel
       // Include timing stats only when the device configuration screen is visible
-      const [statusResult, logsResult] = await Promise.all([
+      const [statusResult, logsResult, nodeInfoResult] = await Promise.all([
         window.bridge.runtimeGetStatus(currentIpAddress, currentJwtToken, includeTimingStatsInPolling),
-        // Fetch logs (incremental for v4 runtime)
         window.bridge.runtimeGetLogs(currentIpAddress, currentJwtToken, minId),
+        includeTimingStatsInPolling
+          ? window.bridge.runtimeGetNodeInfo(currentIpAddress, currentJwtToken, 'system,network')
+          : Promise.resolve({ success: false as const }),
       ])
 
       // Process status result
@@ -135,10 +139,15 @@ export const useRuntimePolling = () => {
         } else if (!includeTimingStatsInPolling) {
           // Clear stale timing stats when no longer polling for them
           setTimingStats(null)
+          setRuntimeNodeInfo(null)
         }
       } else {
         handlePollFailure()
         return // Skip logs processing if status failed
+      }
+
+      if (includeTimingStatsInPolling && nodeInfoResult.success && nodeInfoResult.nodeInfo) {
+        setRuntimeNodeInfo(nodeInfoResult.nodeInfo)
       }
 
       // Process logs result
@@ -187,7 +196,7 @@ export const useRuntimePolling = () => {
     } finally {
       isPollingRef.current = false
     }
-  }, [handleConnectionLost, setPlcRuntimeStatus])
+  }, [handleConnectionLost, setPlcRuntimeStatus, setRuntimeNodeInfo, setTimingStats])
 
   // Start/stop polling based on connection status
   useEffect(() => {

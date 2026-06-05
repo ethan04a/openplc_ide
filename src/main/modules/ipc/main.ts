@@ -483,6 +483,68 @@ class MainProcessBridge implements MainIpcModule {
     }
   }
 
+  handleRuntimeGetNodeInfo = async (
+    _event: IpcMainInvokeEvent,
+    ipAddress: string,
+    jwtToken: string,
+    include = 'system,network',
+  ) => {
+    try {
+      const endpoint = `/api/node-info?include=${encodeURIComponent(include)}`
+      const result = await this.makeRuntimeApiRequest<{
+        system?: {
+          os: string
+          kernel: string
+          cpu_usage_percent: number
+          ram_usage_percent: number
+          ram_total_mb?: number
+          ram_used_mb?: number
+        }
+        network?: {
+          interfaces: Array<{
+            interface: string
+            ip: string | null
+            mac: string
+            state?: 'up' | 'down'
+          }>
+        }
+        timestamp?: string
+      }>(
+        ipAddress,
+        jwtToken,
+        endpoint,
+        (data: string) =>
+          JSON.parse(data) as {
+            system?: {
+              os: string
+              kernel: string
+              cpu_usage_percent: number
+              ram_usage_percent: number
+              ram_total_mb?: number
+              ram_used_mb?: number
+            }
+            network?: {
+              interfaces: Array<{
+                interface: string
+                ip: string | null
+                mac: string
+                state?: 'up' | 'down'
+              }>
+            }
+            timestamp?: string
+          },
+      )
+
+      if (result.success && result.data) {
+        return { success: true, nodeInfo: result.data }
+      }
+
+      return { success: false, error: !result.success ? result.error : 'Unknown error' }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  }
+
   handleRuntimeClearCredentials = (_event: IpcMainInvokeEvent) => {
     this.runtimeCredentials = null
     return { success: true }
@@ -596,6 +658,7 @@ class MainProcessBridge implements MainIpcModule {
     this.ipcMain.handle('runtime:stop-plc', this.handleRuntimeStopPlc)
     this.ipcMain.handle('runtime:get-compilation-status', this.handleRuntimeGetCompilationStatus)
     this.ipcMain.handle('runtime:get-logs', this.handleRuntimeGetLogs)
+    this.ipcMain.handle('runtime:get-node-info', this.handleRuntimeGetNodeInfo)
     this.ipcMain.handle('runtime:clear-credentials', this.handleRuntimeClearCredentials)
     this.ipcMain.handle('runtime:get-serial-ports', this.handleRuntimeGetSerialPorts)
 

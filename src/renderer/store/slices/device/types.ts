@@ -5,6 +5,7 @@ import {
   interfaceOptions,
   staticHostConfigurationSchema,
 } from '@root/types/PLC/devices'
+import type { RuntimeLogEntry } from '@root/types/PLC/runtime-logs'
 import { z } from 'zod'
 
 /**
@@ -50,17 +51,64 @@ const timingStatsSchema = z.object({
   overruns: z.number(),
 })
 
+const runtimeNodeSystemInfoSchema = z.object({
+  os: z.string(),
+  kernel: z.string(),
+  cpu_usage_percent: z.number(),
+  ram_usage_percent: z.number(),
+  ram_total_mb: z.number().optional(),
+  ram_used_mb: z.number().optional(),
+})
+
+const runtimeNetworkInterfaceSchema = z.object({
+  interface: z.string(),
+  ip: z.string().nullable(),
+  mac: z.string(),
+  state: z.enum(['up', 'down']).optional(),
+})
+
+const runtimeNodeInfoSchema = z.object({
+  system: runtimeNodeSystemInfoSchema.optional(),
+  network: z
+    .object({
+      interfaces: z.array(runtimeNetworkInterfaceSchema),
+    })
+    .optional(),
+  timestamp: z.string().optional(),
+})
+
 const runtimeConnectionSchema = z.object({
   jwtToken: z.string().nullable(),
   connectionStatus: z.enum(['disconnected', 'connecting', 'connected', 'error']),
   plcStatus: z.enum(['INIT', 'RUNNING', 'STOPPED', 'ERROR', 'EMPTY', 'UNKNOWN']).nullable(),
   ipAddress: z.string().nullable(),
   timingStats: timingStatsSchema.nullable(),
+  nodeInfo: runtimeNodeInfoSchema.nullable(),
   // Flag to include timing stats in status polling (set by board.tsx when visible)
   includeTimingStatsInPolling: z.boolean(),
 })
 
 type RuntimeConnection = z.infer<typeof runtimeConnectionSchema>
+
+const standbyRuntimeConnectionSchema = z.object({
+  jwtToken: z.string().nullable(),
+  connectionStatus: z.enum(['disconnected', 'connecting', 'connected', 'error']),
+  plcStatus: z.enum(['INIT', 'RUNNING', 'STOPPED', 'ERROR', 'EMPTY', 'UNKNOWN']).nullable(),
+  ipAddress: z.string().nullable(),
+  timingStats: timingStatsSchema.nullable(),
+  plcLogs: z.array(
+    z.object({
+      id: z.number().nullable(),
+      timestamp: z.string(),
+      level: z.enum(['DEBUG', 'INFO', 'WARNING', 'ERROR']),
+      message: z.string(),
+    }),
+  ),
+  plcLogsLastId: z.number().nullable(),
+})
+
+type StandbyRuntimeConnection = z.infer<typeof standbyRuntimeConnectionSchema>
+type RuntimeNodeInfo = z.infer<typeof runtimeNodeInfoSchema>
 
 const availableBoardInfo = z.object({
   compiler: z.enum(['arduino-cli', 'openplc-compiler', 'simulator']),
@@ -114,6 +162,7 @@ const deviceStateSchema = z.object({
     updated: z.boolean(),
   }),
   runtimeConnection: runtimeConnectionSchema,
+  standbyRuntimeConnection: standbyRuntimeConnectionSchema,
 })
 
 type DeviceState = z.infer<typeof deviceStateSchema>
@@ -184,8 +233,14 @@ const deviceActionSchema = z.object({
   setStaticHostConfiguration: z.function().args(staticHostConfigurationSchema.partial()).returns(z.void()),
   setCompileOnly: z.function().args(z.boolean()).returns(z.void()),
   setRuntimeIpAddress: z.function().args(z.string()).returns(z.void()),
+  setStandbyRuntimeIpAddress: z.function().args(z.string()).returns(z.void()),
   setRuntimeJwtToken: z.function().args(z.string().nullable()).returns(z.void()),
+  setStandbyRuntimeJwtToken: z.function().args(z.string().nullable()).returns(z.void()),
   setRuntimeConnectionStatus: z
+    .function()
+    .args(z.enum(['disconnected', 'connecting', 'connected', 'error']))
+    .returns(z.void()),
+  setStandbyRuntimeConnectionStatus: z
     .function()
     .args(z.enum(['disconnected', 'connecting', 'connected', 'error']))
     .returns(z.void()),
@@ -193,14 +248,31 @@ const deviceActionSchema = z.object({
     .function()
     .args(z.enum(['INIT', 'RUNNING', 'STOPPED', 'ERROR', 'EMPTY', 'UNKNOWN']).nullable())
     .returns(z.void()),
+  setStandbyPlcRuntimeStatus: z
+    .function()
+    .args(z.enum(['INIT', 'RUNNING', 'STOPPED', 'ERROR', 'EMPTY', 'UNKNOWN']).nullable())
+    .returns(z.void()),
   setTimingStats: z.function().args(timingStatsSchema.nullable()).returns(z.void()),
+  setRuntimeNodeInfo: z.function().args(runtimeNodeInfoSchema.nullable()).returns(z.void()),
+  setStandbyTimingStats: z.function().args(timingStatsSchema.nullable()).returns(z.void()),
   setIncludeTimingStatsInPolling: z.function().args(z.boolean()).returns(z.void()),
+  setStandbyPlcLogs: z.function().args(z.array(z.custom<RuntimeLogEntry>())).returns(z.void()),
+  appendStandbyPlcLogs: z.function().args(z.array(z.custom<RuntimeLogEntry>())).returns(z.void()),
+  clearStandbyPlcLogs: z.function().args().returns(z.void()),
+  setStandbyPlcLogsLastId: z.function().args(z.number().nullable()).returns(z.void()),
   setTemporaryDhcpIp: z.function().args(z.string().optional()).returns(z.void()),
 })
 
-type DeviceActions = Omit<z.infer<typeof deviceActionSchema>, 'setTimingStats'> & {
+type DeviceActions = Omit<
+  z.infer<typeof deviceActionSchema>,
+  'setTimingStats' | 'setStandbyTimingStats' | 'setRuntimeNodeInfo'
+> & {
   setTimingStats: (stats: TimingStats | null) => void
+  setRuntimeNodeInfo: (nodeInfo: RuntimeNodeInfo | null) => void
+  setStandbyTimingStats: (stats: TimingStats | null) => void
   setIncludeTimingStatsInPolling: (include: boolean) => void
+  setStandbyPlcLogs: (logs: RuntimeLogEntry[]) => void
+  appendStandbyPlcLogs: (logs: RuntimeLogEntry[]) => void
 }
 
 type DeviceSlice = DeviceState & {
@@ -215,6 +287,8 @@ export type {
   DeviceSlice,
   DeviceState,
   RuntimeConnection,
+  RuntimeNodeInfo,
+  StandbyRuntimeConnection,
   TimingStats,
 }
 export {
@@ -227,5 +301,7 @@ export {
   deviceStateSchema,
   interfaceOptions,
   runtimeConnectionSchema,
+  runtimeNodeInfoSchema,
+  standbyRuntimeConnectionSchema,
   timingStatsSchema,
 }

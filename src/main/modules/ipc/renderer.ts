@@ -349,6 +349,33 @@ const rendererProcessBridge = {
     minId?: number,
   ): Promise<{ success: boolean; logs?: string | RuntimeLogEntry[]; error?: string }> =>
     ipcRenderer.invoke('runtime:get-logs', ipAddress, jwtToken, minId),
+  runtimeGetNodeInfo: (
+    ipAddress: string,
+    jwtToken: string,
+    include?: string,
+  ): Promise<{
+    success: boolean
+    nodeInfo?: {
+      system?: {
+        os: string
+        kernel: string
+        cpu_usage_percent: number
+        ram_usage_percent: number
+        ram_total_mb?: number
+        ram_used_mb?: number
+      }
+      network?: {
+        interfaces: Array<{
+          interface: string
+          ip: string | null
+          mac: string
+          state?: 'up' | 'down'
+        }>
+      }
+      timestamp?: string
+    }
+    error?: string
+  }> => ipcRenderer.invoke('runtime:get-node-info', ipAddress, jwtToken, include),
   runtimeClearCredentials: (): Promise<{ success: boolean }> => ipcRenderer.invoke('runtime:clear-credentials'),
   runtimeGetSerialPorts: (
     ipAddress: string,

@@ -1,9 +1,15 @@
 import { useOpenPLCStore } from '@root/renderer/store'
+import type { RuntimeConnectionModalData } from '@root/renderer/store/slices/device/runtime-connection-target'
 import { validateIpAddress } from '@root/utils'
 import { useState } from 'react'
 
 import { Label } from '../../_atoms'
 import { Modal, ModalContent, ModalTitle } from '../../_molecules/modal'
+
+const getConnectionTarget = (data: unknown) => {
+  const modalData = data as RuntimeConnectionModalData | null
+  return modalData?.connectionTarget ?? 'master'
+}
 
 const RuntimeLoginModal = () => {
   const { modals, modalActions, deviceDefinitions, deviceActions } = useOpenPLCStore()
@@ -13,6 +19,8 @@ const RuntimeLoginModal = () => {
   const [isLoading, setIsLoading] = useState(false)
 
   const isOpen = modals['runtime-login']?.open || false
+  const connectionTarget = getConnectionTarget(modals['runtime-login']?.data)
+  const isStandby = connectionTarget === 'standby'
 
   const handleLogin = async () => {
     setError('')
@@ -23,7 +31,9 @@ const RuntimeLoginModal = () => {
     }
 
     setIsLoading(true)
-    const ipAddress = deviceDefinitions.configuration.runtimeIpAddress || ''
+    const ipAddress = isStandby
+      ? deviceDefinitions.configuration.standbyRuntimeIpAddress || ''
+      : deviceDefinitions.configuration.runtimeIpAddress || ''
 
     const ipValidation = validateIpAddress(ipAddress)
     if (!ipValidation.valid) {
@@ -36,8 +46,14 @@ const RuntimeLoginModal = () => {
       const result = await window.bridge.runtimeLogin(ipAddress, username, password)
 
       if (result.success && result.accessToken) {
-        deviceActions.setRuntimeJwtToken(result.accessToken)
-        deviceActions.setRuntimeConnectionStatus('connected')
+        if (isStandby) {
+          deviceActions.clearStandbyPlcLogs()
+          deviceActions.setStandbyRuntimeJwtToken(result.accessToken)
+          deviceActions.setStandbyRuntimeConnectionStatus('connected')
+        } else {
+          deviceActions.setRuntimeJwtToken(result.accessToken)
+          deviceActions.setRuntimeConnectionStatus('connected')
+        }
         modalActions.closeModal()
         setUsername('')
         setPassword('')
@@ -53,7 +69,11 @@ const RuntimeLoginModal = () => {
 
   const handleCancel = () => {
     modalActions.closeModal()
-    deviceActions.setRuntimeConnectionStatus('disconnected')
+    if (isStandby) {
+      deviceActions.setStandbyRuntimeConnectionStatus('disconnected')
+    } else {
+      deviceActions.setRuntimeConnectionStatus('disconnected')
+    }
     setUsername('')
     setPassword('')
     setError('')
@@ -70,7 +90,9 @@ const RuntimeLoginModal = () => {
       }}
     >
       <ModalContent className='flex min-h-[380px] w-[400px] select-none flex-col items-center justify-start rounded-lg p-6'>
-        <ModalTitle className='mb-4 text-xl font-semibold'>Login to OpenPLC Runtime</ModalTitle>
+        <ModalTitle className='mb-4 text-xl font-semibold'>
+          {isStandby ? 'Login to Standby Runtime' : 'Login to OpenPLC Runtime'}
+        </ModalTitle>
 
         <p className='mb-6 text-center text-sm text-neutral-600 dark:text-neutral-400'>
           Please enter your credentials to connect to the runtime.

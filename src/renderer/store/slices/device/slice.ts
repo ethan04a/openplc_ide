@@ -1,9 +1,10 @@
 import { DeviceConfiguration, DevicePin } from '@root/types/PLC/devices'
+import { LOG_BUFFER_CAP, type RuntimeLogEntry } from '@root/types/PLC/runtime-logs'
 import { produce } from 'immer'
 import { StateCreator } from 'zustand'
 
 import { defaultDeviceConfiguration } from './data'
-import type { DeviceSlice, TimingStats } from './types'
+import type { DeviceSlice, RuntimeNodeInfo, TimingStats } from './types'
 import {
   checkIfPinIsValid,
   checkIfPinNameIsValid,
@@ -36,7 +37,17 @@ const createDeviceSlice: StateCreator<DeviceSlice, [], [], DeviceSlice> = (setSt
     plcStatus: null,
     ipAddress: null,
     timingStats: null,
+    nodeInfo: null,
     includeTimingStatsInPolling: false,
+  },
+  standbyRuntimeConnection: {
+    jwtToken: null,
+    connectionStatus: 'disconnected',
+    plcStatus: null,
+    ipAddress: null,
+    timingStats: null,
+    plcLogs: [],
+    plcLogsLastId: null,
   },
 
   deviceActions: {
@@ -54,12 +65,15 @@ const createDeviceSlice: StateCreator<DeviceSlice, [], [], DeviceSlice> = (setSt
     },
     setDeviceDefinitions: ({ configuration, pinMapping }): void => {
       setState(
-        produce(({ deviceDefinitions, runtimeConnection }: DeviceSlice) => {
+        produce(({ deviceDefinitions, runtimeConnection, standbyRuntimeConnection }: DeviceSlice) => {
           if (configuration) {
             deviceDefinitions.configuration = mergeDeviceConfigWithDefaults(configuration, defaultDeviceConfiguration)
             // Sync runtimeIpAddress to runtimeConnection for debugger polling
             if (deviceDefinitions.configuration.runtimeIpAddress) {
               runtimeConnection.ipAddress = deviceDefinitions.configuration.runtimeIpAddress
+            }
+            if (deviceDefinitions.configuration.standbyRuntimeIpAddress) {
+              standbyRuntimeConnection.ipAddress = deviceDefinitions.configuration.standbyRuntimeIpAddress
             }
           }
           if (pinMapping) {
@@ -71,7 +85,7 @@ const createDeviceSlice: StateCreator<DeviceSlice, [], [], DeviceSlice> = (setSt
     },
     clearDeviceDefinitions: (): void => {
       setState(
-        produce(({ deviceDefinitions, runtimeConnection }: DeviceSlice) => {
+        produce(({ deviceDefinitions, runtimeConnection, standbyRuntimeConnection }: DeviceSlice) => {
           deviceDefinitions.configuration = defaultDeviceConfiguration
           deviceDefinitions.pinMapping = {
             pins: [],
@@ -83,7 +97,15 @@ const createDeviceSlice: StateCreator<DeviceSlice, [], [], DeviceSlice> = (setSt
           runtimeConnection.plcStatus = null
           runtimeConnection.ipAddress = null
           runtimeConnection.timingStats = null
+          runtimeConnection.nodeInfo = null
           runtimeConnection.includeTimingStatsInPolling = false
+          standbyRuntimeConnection.jwtToken = null
+          standbyRuntimeConnection.connectionStatus = 'disconnected'
+          standbyRuntimeConnection.plcStatus = null
+          standbyRuntimeConnection.ipAddress = null
+          standbyRuntimeConnection.timingStats = null
+          standbyRuntimeConnection.plcLogs = []
+          standbyRuntimeConnection.plcLogsLastId = null
         }),
       )
     },
@@ -461,10 +483,25 @@ const createDeviceSlice: StateCreator<DeviceSlice, [], [], DeviceSlice> = (setSt
         }),
       )
     },
+    setStandbyRuntimeIpAddress: (ipAddress): void => {
+      setState(
+        produce(({ deviceDefinitions, standbyRuntimeConnection }: DeviceSlice) => {
+          deviceDefinitions.configuration.standbyRuntimeIpAddress = ipAddress
+          standbyRuntimeConnection.ipAddress = ipAddress
+        }),
+      )
+    },
     setRuntimeJwtToken: (token): void => {
       setState(
         produce(({ runtimeConnection }: DeviceSlice) => {
           runtimeConnection.jwtToken = token
+        }),
+      )
+    },
+    setStandbyRuntimeJwtToken: (token): void => {
+      setState(
+        produce(({ standbyRuntimeConnection }: DeviceSlice) => {
+          standbyRuntimeConnection.jwtToken = token
         }),
       )
     },
@@ -475,10 +512,26 @@ const createDeviceSlice: StateCreator<DeviceSlice, [], [], DeviceSlice> = (setSt
         }),
       )
     },
+    setStandbyRuntimeConnectionStatus: (status): void => {
+      setState(
+        produce(({ standbyRuntimeConnection }: DeviceSlice) => {
+          standbyRuntimeConnection.connectionStatus = status
+        }),
+      )
+    },
     setPlcRuntimeStatus: (status: 'INIT' | 'RUNNING' | 'STOPPED' | 'ERROR' | 'EMPTY' | 'UNKNOWN' | null): void => {
       setState(
         produce(({ runtimeConnection }: DeviceSlice) => {
           runtimeConnection.plcStatus = status
+        }),
+      )
+    },
+    setStandbyPlcRuntimeStatus: (
+      status: 'INIT' | 'RUNNING' | 'STOPPED' | 'ERROR' | 'EMPTY' | 'UNKNOWN' | null,
+    ): void => {
+      setState(
+        produce(({ standbyRuntimeConnection }: DeviceSlice) => {
+          standbyRuntimeConnection.plcStatus = status
         }),
       )
     },
@@ -489,10 +542,55 @@ const createDeviceSlice: StateCreator<DeviceSlice, [], [], DeviceSlice> = (setSt
         }),
       )
     },
+    setRuntimeNodeInfo: (nodeInfo: RuntimeNodeInfo | null): void => {
+      setState(
+        produce(({ runtimeConnection }: DeviceSlice) => {
+          runtimeConnection.nodeInfo = nodeInfo
+        }),
+      )
+    },
+    setStandbyTimingStats: (stats: TimingStats | null): void => {
+      setState(
+        produce(({ standbyRuntimeConnection }: DeviceSlice) => {
+          standbyRuntimeConnection.timingStats = stats
+        }),
+      )
+    },
     setIncludeTimingStatsInPolling: (include: boolean): void => {
       setState(
         produce(({ runtimeConnection }: DeviceSlice) => {
           runtimeConnection.includeTimingStatsInPolling = include
+        }),
+      )
+    },
+    setStandbyPlcLogs: (logs: RuntimeLogEntry[]): void => {
+      setState(
+        produce(({ standbyRuntimeConnection }: DeviceSlice) => {
+          standbyRuntimeConnection.plcLogs = logs
+        }),
+      )
+    },
+    appendStandbyPlcLogs: (newLogs: RuntimeLogEntry[]): void => {
+      setState(
+        produce(({ standbyRuntimeConnection }: DeviceSlice) => {
+          const combined = [...standbyRuntimeConnection.plcLogs, ...newLogs]
+          standbyRuntimeConnection.plcLogs =
+            combined.length > LOG_BUFFER_CAP ? combined.slice(-LOG_BUFFER_CAP) : combined
+        }),
+      )
+    },
+    clearStandbyPlcLogs: (): void => {
+      setState(
+        produce(({ standbyRuntimeConnection }: DeviceSlice) => {
+          standbyRuntimeConnection.plcLogs = []
+          standbyRuntimeConnection.plcLogsLastId = null
+        }),
+      )
+    },
+    setStandbyPlcLogsLastId: (lastId: number | null): void => {
+      setState(
+        produce(({ standbyRuntimeConnection }: DeviceSlice) => {
+          standbyRuntimeConnection.plcLogsLastId = lastId
         }),
       )
     },
@@ -514,6 +612,7 @@ function mergeDeviceConfigWithDefaults(
     deviceBoard: provided.deviceBoard ?? defaults.deviceBoard,
     communicationPort: provided.communicationPort ?? defaults.communicationPort,
     runtimeIpAddress: provided.runtimeIpAddress ?? defaults.runtimeIpAddress,
+    standbyRuntimeIpAddress: provided.standbyRuntimeIpAddress ?? defaults.standbyRuntimeIpAddress,
     compileOnly: provided.compileOnly ?? defaults.compileOnly,
     communicationConfiguration: {
       modbusRTU: {

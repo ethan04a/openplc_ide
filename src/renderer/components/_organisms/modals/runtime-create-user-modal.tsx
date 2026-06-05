@@ -1,9 +1,15 @@
 import { useOpenPLCStore } from '@root/renderer/store'
+import type { RuntimeConnectionModalData } from '@root/renderer/store/slices/device/runtime-connection-target'
 import { validateIpAddress } from '@root/utils'
 import { useState } from 'react'
 
 import { Label } from '../../_atoms'
 import { Modal, ModalContent, ModalTitle } from '../../_molecules/modal'
+
+const getConnectionTarget = (data: unknown) => {
+  const modalData = data as RuntimeConnectionModalData | null
+  return modalData?.connectionTarget ?? 'master'
+}
 
 const RuntimeCreateUserModal = () => {
   const { modals, modalActions, deviceDefinitions, deviceActions } = useOpenPLCStore()
@@ -14,6 +20,8 @@ const RuntimeCreateUserModal = () => {
   const [isLoading, setIsLoading] = useState(false)
 
   const isOpen = modals['runtime-create-user']?.open || false
+  const connectionTarget = getConnectionTarget(modals['runtime-create-user']?.data)
+  const isStandby = connectionTarget === 'standby'
 
   const handleCreateUser = async () => {
     setError('')
@@ -29,7 +37,9 @@ const RuntimeCreateUserModal = () => {
     }
 
     setIsLoading(true)
-    const ipAddress = deviceDefinitions.configuration.runtimeIpAddress || ''
+    const ipAddress = isStandby
+      ? deviceDefinitions.configuration.standbyRuntimeIpAddress || ''
+      : deviceDefinitions.configuration.runtimeIpAddress || ''
 
     const ipValidation = validateIpAddress(ipAddress)
     if (!ipValidation.valid) {
@@ -44,8 +54,14 @@ const RuntimeCreateUserModal = () => {
       if (result.success) {
         const loginResult = await window.bridge.runtimeLogin(ipAddress, username, password)
         if (loginResult.success && loginResult.accessToken) {
-          deviceActions.setRuntimeJwtToken(loginResult.accessToken)
-          deviceActions.setRuntimeConnectionStatus('connected')
+          if (isStandby) {
+            deviceActions.clearStandbyPlcLogs()
+            deviceActions.setStandbyRuntimeJwtToken(loginResult.accessToken)
+            deviceActions.setStandbyRuntimeConnectionStatus('connected')
+          } else {
+            deviceActions.setRuntimeJwtToken(loginResult.accessToken)
+            deviceActions.setRuntimeConnectionStatus('connected')
+          }
           modalActions.closeModal()
           setUsername('')
           setPassword('')
@@ -65,7 +81,11 @@ const RuntimeCreateUserModal = () => {
 
   const handleCancel = () => {
     modalActions.closeModal()
-    deviceActions.setRuntimeConnectionStatus('disconnected')
+    if (isStandby) {
+      deviceActions.setStandbyRuntimeConnectionStatus('disconnected')
+    } else {
+      deviceActions.setRuntimeConnectionStatus('disconnected')
+    }
     setUsername('')
     setPassword('')
     setConfirmPassword('')
@@ -83,10 +103,14 @@ const RuntimeCreateUserModal = () => {
       }}
     >
       <ModalContent className='flex min-h-[480px] w-[400px] select-none flex-col items-center justify-start rounded-lg p-6'>
-        <ModalTitle className='mb-4 text-xl font-semibold'>Create First User</ModalTitle>
+        <ModalTitle className='mb-4 text-xl font-semibold'>
+          {isStandby ? 'Create First Standby User' : 'Create First User'}
+        </ModalTitle>
 
         <p className='mb-6 text-center text-sm text-neutral-600 dark:text-neutral-400'>
-          This OpenPLC Runtime has no users registered. Please create the first user account.
+          {isStandby
+            ? 'This standby OpenPLC Runtime has no users registered. Please create the first user account.'
+            : 'This OpenPLC Runtime has no users registered. Please create the first user account.'}
         </p>
 
         <div className='flex w-full flex-col gap-4'>

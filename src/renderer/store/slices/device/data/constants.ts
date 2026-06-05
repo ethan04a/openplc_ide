@@ -5,6 +5,7 @@ export const defaultDeviceConfiguration: DeviceConfiguration = {
   deviceBoard: 'OpenPLC Simulator',
   communicationPort: '',
   runtimeIpAddress: '',
+  standbyRuntimeIpAddress: '',
   compileOnly: false,
   communicationConfiguration: {
     modbusRTU: {

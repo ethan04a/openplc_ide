@@ -3,6 +3,7 @@ import { ConsoleFilters } from '@components/_organisms/console/filters'
 import { PlcLogsFilters } from '@components/_organisms/plc-logs/filters'
 import * as Tabs from '@radix-ui/react-tabs'
 import { useRuntimePolling } from '@root/renderer/hooks/use-runtime-polling'
+import { useStandbyRuntimePolling } from '@root/renderer/hooks/use-standby-runtime-polling'
 import { DebugTreeNode } from '@root/types/debugger'
 import { baseTypeSchema } from '@root/types/PLC/open-plc'
 import type { PLCBaseTypesLowercase } from '@root/types/PLC/units/base-types'
@@ -86,6 +87,7 @@ const WorkspaceScreen = () => {
   // Global runtime status polling - runs continuously while connected to runtime
   // This ensures the sidebar start/stop button updates correctly from the store
   useRuntimePolling()
+  useStandbyRuntimePolling()
 
   const allDebugVariables = pous.flatMap((pou) => {
     return pou.data.variables

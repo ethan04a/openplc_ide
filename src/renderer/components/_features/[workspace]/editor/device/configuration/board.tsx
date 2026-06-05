@@ -5,19 +5,16 @@ import { Checkbox, Label, Select, SelectContent, SelectItem, SelectTrigger } fro
 import TableActions from '@root/renderer/components/_atoms/table-actions'
 import { Modal, ModalContent, ModalFooter, ModalHeader, ModalTitle } from '@root/renderer/components/_molecules/modal'
 import { DeviceEditorSlot } from '@root/renderer/components/_templates/[editors]'
+import { useRuntimeConnect } from '@root/renderer/hooks/use-runtime-connect'
 import { useOpenPLCStore } from '@root/renderer/store'
-import type { RuntimeConnection, TimingStats } from '@root/renderer/store/slices/device/types'
-import {
-  cn,
-  isArduinoTarget,
-  isOpenPLCRuntimeTarget,
-  isOpenPLCRuntimeV4Target,
-  isSimulatorTarget,
-  validateRuntimeVersion,
-} from '@root/utils'
+import type { TimingStats } from '@root/renderer/store/slices/device/types'
+import { cn, isArduinoTarget, isOpenPLCRuntimeTarget, isOpenPLCRuntimeV4Target, isSimulatorTarget } from '@root/utils'
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import { HotRedundancySection } from './components/hot-redundancy'
 import { PinMappingTable } from './components/pin-mapping-table'
+import { RuntimeConnectionGroup } from './components/runtime-connection-group'
+import { ScanCycleStats } from './components/scan-cycle-stats'
 
 const Board = memo(function () {
   const {
@@ -46,17 +43,15 @@ const Board = memo(function () {
 
   const currentBoardInfo = availableBoards.get(deviceBoard)
 
-  const runtimeIpAddress = useOpenPLCStore((state) => state.deviceDefinitions.configuration.runtimeIpAddress || '')
-  const connectionStatus = useOpenPLCStore((state) => state.runtimeConnection.connectionStatus)
-  const setRuntimeIpAddress = useOpenPLCStore((state) => state.deviceActions.setRuntimeIpAddress)
-  const setRuntimeConnectionStatus = useOpenPLCStore((state) => state.deviceActions.setRuntimeConnectionStatus)
-  const setRuntimeJwtToken = useOpenPLCStore((state) => state.deviceActions.setRuntimeJwtToken)
-  const openModal = useOpenPLCStore((state) => state.modalActions.openModal)
-  const plcStatus = useOpenPLCStore((state): RuntimeConnection['plcStatus'] => state.runtimeConnection.plcStatus)
   const timingStats = useOpenPLCStore((state): TimingStats | null => state.runtimeConnection.timingStats)
   const setIncludeTimingStatsInPolling = useOpenPLCStore(
     (state): ((include: boolean) => void) => state.deviceActions.setIncludeTimingStatsInPolling,
   )
+
+  const masterRuntime = useRuntimeConnect({ target: 'master', deviceBoard })
+  const standbyRuntime = useRuntimeConnect({ target: 'standby', deviceBoard })
+  const isRuntimeV4 = isOpenPLCRuntimeV4Target(deviceBoard)
+  const openModal = useOpenPLCStore((state) => state.modalActions.openModal)
 
   const [isPressed, setIsPressed] = useState(false)
   const [previewImage, setPreviewImage] = useState('')
@@ -149,7 +144,7 @@ const Board = memo(function () {
     (board: string) => {
       const normalizedBoard = board.split('[')[0].trim()
 
-      if (connectionStatus === 'connected' && normalizedBoard !== deviceBoard) {
+      if (masterRuntime.connectionStatus === 'connected' && normalizedBoard !== deviceBoard) {
         openModal('confirm-device-switch', {
           newBoard: normalizedBoard,
           formattedNewBoard: board,
@@ -190,7 +185,7 @@ const Board = memo(function () {
       setDeviceBoard(normalizedBoard)
     },
     [
-      connectionStatus,
+      masterRuntime.connectionStatus,
       deviceBoard,
       setDeviceBoard,
       setFormattedBoardState,
@@ -208,86 +203,6 @@ const Board = memo(function () {
   }
   const memoizedCompileOnly = useMemo(() => compileOnly, [compileOnly])
 
-  const handleConnectToRuntime = useCallback(async () => {
-    if (connectionStatus === 'connected') {
-      // Disconnect - global polling hook will handle resetting failure counter
-      setRuntimeJwtToken(null)
-      setRuntimeConnectionStatus('disconnected')
-      const clearCreds = window.bridge.runtimeClearCredentials as (() => Promise<{ success: boolean }>) | undefined
-      await clearCreds?.()
-      return
-    }
-
-    if (!runtimeIpAddress) {
-      return
-    }
-
-    setRuntimeConnectionStatus('connecting')
-
-    try {
-      const result = await window.bridge.runtimeGetUsersInfo(runtimeIpAddress)
-
-      if (result.error) {
-        setRuntimeConnectionStatus('error')
-        return
-      }
-
-      // Validate runtime version matches the selected board target
-      const versionValidation = validateRuntimeVersion(deviceBoard, result.runtimeVersion)
-
-      // Helper to proceed with connection after validation
-      const proceedWithConnection = () => {
-        if (result.hasUsers) {
-          openModal('runtime-login', null)
-        } else {
-          openModal('runtime-create-user', null)
-        }
-      }
-
-      if (versionValidation.status === 'mismatch') {
-        // Hard error for version mismatch - cannot proceed
-        setRuntimeConnectionStatus('error')
-        openModal('debugger-message', {
-          type: 'error',
-          title: 'Runtime Version Mismatch',
-          message: versionValidation.message || 'Unknown version mismatch error',
-          buttons: ['OK'],
-          onResponse: () => {
-            // No action needed, just close the modal
-          },
-        })
-        return
-      }
-
-      if (versionValidation.status === 'missing') {
-        // Warning for older runtimes - allow user to continue anyway
-        // Note: buttons ordered as ['Continue Anyway', 'Cancel'] so Cancel (index 1) is the default
-        // when closing the modal (DebuggerMessageModal calls onResponse with last button index on close)
-        openModal('debugger-message', {
-          type: 'warning',
-          title: 'Older Runtime Detected',
-          message: versionValidation.message || 'Could not detect runtime version.',
-          buttons: ['Continue Anyway', 'Cancel'],
-          onResponse: (buttonIndex: number) => {
-            if (buttonIndex === 0) {
-              // User clicked "Continue Anyway" - proceed with connection
-              proceedWithConnection()
-            } else {
-              // User clicked "Cancel" or closed the modal - stay disconnected
-              setRuntimeConnectionStatus('disconnected')
-            }
-          },
-        })
-        return
-      }
-
-      // Version is OK - proceed normally
-      proceedWithConnection()
-    } catch (_error) {
-      setRuntimeConnectionStatus('error')
-    }
-  }, [runtimeIpAddress, connectionStatus, setRuntimeConnectionStatus, setRuntimeJwtToken, openModal, deviceBoard])
-
   // Enable timing stats in global polling when this screen is visible
   useEffect(() => {
     // Set the flag to include timing stats in the global status polling
@@ -298,6 +213,8 @@ const Board = memo(function () {
       setIncludeTimingStatsInPolling(false)
     }
   }, [setIncludeTimingStatsInPolling])
+
+  const isRuntimeV4Connected = isOpenPLCRuntimeV4Target(deviceBoard) && masterRuntime.connectionStatus === 'connected'
 
   return (
     <DeviceEditorSlot heading='Board Settings'>
@@ -371,48 +288,27 @@ const Board = memo(function () {
               </p>
             </div>
           ) : isOpenPLCRuntimeTarget(currentBoardInfo) ? (
-            <>
-              <div id='runtime-ip-address-field' className='flex w-full items-center justify-start gap-1'>
-                <Label
-                  id='runtime-ip-address-label'
-                  className='whitespace-pre text-xs text-neutral-950 dark:text-white'
-                >
-                  IP Address
-                </Label>
-                <input
-                  type='text'
-                  value={runtimeIpAddress}
-                  onChange={(e) => setRuntimeIpAddress(e.target.value)}
-                  placeholder='127.0.0.1 or localhost'
-                  className='flex h-[30px] w-full items-center justify-between gap-1 rounded-md border border-neutral-100 bg-white px-2 py-1 font-caption text-cp-sm font-medium text-neutral-850 outline-none focus:border-brand-medium-dark dark:border-neutral-850 dark:bg-neutral-950 dark:text-neutral-300'
+            <div className='flex w-full flex-col gap-3'>
+              <RuntimeConnectionGroup
+                idPrefix='master'
+                ipAddress={masterRuntime.ipAddress}
+                onIpAddressChange={masterRuntime.setIpAddress}
+                connectionStatus={masterRuntime.connectionStatus}
+                plcStatus={masterRuntime.plcStatus}
+                onConnectClick={() => void masterRuntime.handleConnect()}
+              />
+              {isRuntimeV4 && (
+                <RuntimeConnectionGroup
+                  idPrefix='standby'
+                  ipAddress={standbyRuntime.ipAddress}
+                  onIpAddressChange={standbyRuntime.setIpAddress}
+                  connectionStatus={standbyRuntime.connectionStatus}
+                  plcStatus={standbyRuntime.plcStatus}
+                  onConnectClick={() => void standbyRuntime.handleConnect()}
+                  ipLabel='Standby IP Address'
                 />
-              </div>
-              <div id='runtime-connect-button-container' className='flex w-full items-center justify-start'>
-                <button
-                  type='button'
-                  onClick={handleConnectToRuntime}
-                  disabled={connectionStatus === 'connecting'}
-                  className='h-[30px] rounded-md bg-brand px-4 py-1 font-caption text-cp-sm font-medium text-white hover:bg-brand-medium-dark disabled:opacity-50'
-                >
-                  {connectionStatus === 'connecting'
-                    ? 'Connecting...'
-                    : connectionStatus === 'connected'
-                      ? 'Disconnect'
-                      : 'Connect'}
-                </button>
-                {connectionStatus === 'connected' && (
-                  <div className='ml-2 flex items-center gap-2'>
-                    <span className='text-xs text-green-600 dark:text-green-400'>● Connected</span>
-                    {plcStatus && (
-                      <span className='text-xs text-neutral-600 dark:text-neutral-400'>| PLC: {plcStatus}</span>
-                    )}
-                  </div>
-                )}
-                {connectionStatus === 'error' && (
-                  <span className='ml-2 text-xs text-red-600 dark:text-red-400'>● Connection failed</span>
-                )}
-              </div>
-            </>
+              )}
+            </div>
           ) : (
             <div id='communication-ports-selector' className='flex w-full items-center justify-start gap-1'>
               <Label
@@ -499,65 +395,12 @@ const Board = memo(function () {
       {!isSimulatorTarget(currentBoardInfo) && (
         <hr id='container-split' className='h-[1px] w-full self-stretch bg-brand-light' />
       )}
-      {isSimulatorTarget(currentBoardInfo) ? null : isOpenPLCRuntimeTarget(currentBoardInfo) ? (
-        connectionStatus === 'connected' &&
+      {isSimulatorTarget(currentBoardInfo) ? null : isRuntimeV4Connected ? (
+        <HotRedundancySection timingStats={timingStats} />
+      ) : isOpenPLCRuntimeTarget(currentBoardInfo) ? (
+        masterRuntime.connectionStatus === 'connected' &&
         timingStats &&
-        timingStats.scan_count > 0 && (
-          <div id='scan-cycle-stats-section' className='flex w-full flex-col gap-4'>
-            <h2
-              id='scan-cycle-stats-title'
-              className='select-none text-lg font-medium text-neutral-950 dark:text-white'
-            >
-              Scan Cycle Statistics
-            </h2>
-            <div id='scan-cycle-stats-cards' className='grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-4'>
-              <div className='flex flex-col gap-1 rounded-lg border border-neutral-200 bg-neutral-50 p-3 dark:border-neutral-700 dark:bg-neutral-900'>
-                <span className='text-xs text-neutral-500 dark:text-neutral-400'>Scan Count</span>
-                <span className='text-lg font-semibold text-neutral-900 dark:text-white'>
-                  {timingStats.scan_count.toLocaleString()}
-                </span>
-              </div>
-              <div className='flex flex-col gap-1 rounded-lg border border-neutral-200 bg-neutral-50 p-3 dark:border-neutral-700 dark:bg-neutral-900'>
-                <span className='text-xs text-neutral-500 dark:text-neutral-400'>Overruns</span>
-                <span className='text-lg font-semibold text-neutral-900 dark:text-white'>{timingStats.overruns}</span>
-              </div>
-              {timingStats.scan_time_avg !== null && (
-                <div className='flex flex-col gap-1 rounded-lg border border-neutral-200 bg-neutral-50 p-3 dark:border-neutral-700 dark:bg-neutral-900'>
-                  <span className='text-xs text-neutral-500 dark:text-neutral-400'>Scan Time (avg)</span>
-                  <span className='text-lg font-semibold text-neutral-900 dark:text-white'>
-                    {timingStats.scan_time_avg} <span className='text-sm font-normal'>us</span>
-                  </span>
-                  {timingStats.scan_time_min !== null && timingStats.scan_time_max !== null && (
-                    <span className='text-xs text-neutral-500 dark:text-neutral-400'>
-                      min: {timingStats.scan_time_min} / max: {timingStats.scan_time_max}
-                    </span>
-                  )}
-                </div>
-              )}
-              {timingStats.cycle_time_avg !== null && (
-                <div className='flex flex-col gap-1 rounded-lg border border-neutral-200 bg-neutral-50 p-3 dark:border-neutral-700 dark:bg-neutral-900'>
-                  <span className='text-xs text-neutral-500 dark:text-neutral-400'>Cycle Time (avg)</span>
-                  <span className='text-lg font-semibold text-neutral-900 dark:text-white'>
-                    {timingStats.cycle_time_avg} <span className='text-sm font-normal'>us</span>
-                  </span>
-                  {timingStats.cycle_time_min !== null && timingStats.cycle_time_max !== null && (
-                    <span className='text-xs text-neutral-500 dark:text-neutral-400'>
-                      min: {timingStats.cycle_time_min} / max: {timingStats.cycle_time_max}
-                    </span>
-                  )}
-                </div>
-              )}
-              {timingStats.cycle_latency_avg !== null && (
-                <div className='flex flex-col gap-1 rounded-lg border border-neutral-200 bg-neutral-50 p-3 dark:border-neutral-700 dark:bg-neutral-900'>
-                  <span className='text-xs text-neutral-500 dark:text-neutral-400'>Cycle Latency (avg)</span>
-                  <span className='text-lg font-semibold text-neutral-900 dark:text-white'>
-                    {timingStats.cycle_latency_avg} <span className='text-sm font-normal'>us</span>
-                  </span>
-                </div>
-              )}
-            </div>
-          </div>
-        )
+        timingStats.scan_count > 0 && <ScanCycleStats timingStats={timingStats} variant='default' />
       ) : (
         <div id='pin-mapping-container' className='flex h-3/5 w-full flex-col gap-4'>
           <div id='pin-mapping-table-header-container' className='flex h-fit w-full justify-between'>

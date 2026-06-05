@@ -19,6 +19,7 @@ const deviceConfigurationSchema = z.object({
   deviceBoard: z.string(),
   communicationPort: z.string(),
   runtimeIpAddress: z.string().optional(),
+  standbyRuntimeIpAddress: z.string().optional(),
   compileOnly: z.boolean().default(false),
   communicationConfiguration: z.object({
     modbusRTU: z.object({
