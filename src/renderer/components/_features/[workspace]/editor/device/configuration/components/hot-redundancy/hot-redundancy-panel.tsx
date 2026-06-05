@@ -89,12 +89,15 @@ const hasScanCycleData = (stats: TimingStats | null): stats is TimingStats => st
 const HotRedundancyPanel = ({ timingStats, data = MOCK_HOT_REDUNDANCY_DATA }: HotRedundancyPanelProps) => {
   const { linkStatus } = data
   const masterNodeInfo = useOpenPLCStore((state) => state.runtimeConnection.nodeInfo)
+  const standbyNodeInfo = useOpenPLCStore((state) => state.standbyRuntimeConnection.nodeInfo)
   const standbyTimingStats = useOpenPLCStore((state): TimingStats | null => state.standbyRuntimeConnection.timingStats)
   const standbyPlcLogs = useOpenPLCStore((state) => state.standbyRuntimeConnection.plcLogs)
   const clearStandbyPlcLogs = useOpenPLCStore((state) => state.deviceActions.clearStandbyPlcLogs)
 
   const masterSystemDisplay = useMemo(() => mapRuntimeNodeInfoToSystemDisplay(masterNodeInfo), [masterNodeInfo])
   const masterNetworkDisplay = useMemo(() => mapRuntimeNodeInfoToNetworkDisplay(masterNodeInfo), [masterNodeInfo])
+  const standbySystemDisplay = useMemo(() => mapRuntimeNodeInfoToSystemDisplay(standbyNodeInfo), [standbyNodeInfo])
+  const standbyNetworkDisplay = useMemo(() => mapRuntimeNodeInfoToNetworkDisplay(standbyNodeInfo), [standbyNodeInfo])
 
   return (
     <div id='hot-redundancy-panel-content' className='flex w-full flex-col gap-6'>
@@ -126,8 +129,8 @@ const HotRedundancyPanel = ({ timingStats, data = MOCK_HOT_REDUNDANCY_DATA }: Ho
         <div className='grid w-full grid-cols-1 gap-3 xl:grid-cols-2'>
           <SystemInfoBlock title='主机系统信息' system={masterSystemDisplay} />
           <NetworkInfoBlock title='主机网络信息' network={masterNetworkDisplay} />
-          <SystemInfoBlock title='备机系统信息' system={data.standbySystem} />
-          <NetworkInfoBlock title='备机网络信息' network={data.standbyNetwork} />
+          <SystemInfoBlock title='备机系统信息' system={standbySystemDisplay} />
+          <NetworkInfoBlock title='备机网络信息' network={standbyNetworkDisplay} />
         </div>
       </Section>
     </div>

@@ -21,6 +21,7 @@ export const useStandbyRuntimePolling = () => {
   const setStandbyTimingStats = useOpenPLCStore(
     (state): ((stats: TimingStats | null) => void) => state.deviceActions.setStandbyTimingStats,
   )
+  const setStandbyNodeInfo = useOpenPLCStore((state) => state.deviceActions.setStandbyNodeInfo)
   const clearStandbyPlcLogs = useOpenPLCStore((state) => state.deviceActions.clearStandbyPlcLogs)
 
   const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -33,6 +34,7 @@ export const useStandbyRuntimePolling = () => {
     setStandbyRuntimeConnectionStatus('disconnected')
     setStandbyPlcRuntimeStatus(null)
     setStandbyTimingStats(null)
+    setStandbyNodeInfo(null)
     clearStandbyPlcLogs()
   }, [
     clearStandbyPlcLogs,
@@ -40,6 +42,7 @@ export const useStandbyRuntimePolling = () => {
     setStandbyRuntimeConnectionStatus,
     setStandbyRuntimeJwtToken,
     setStandbyTimingStats,
+    setStandbyNodeInfo,
   ])
 
   const poll = useCallback(async () => {
@@ -80,9 +83,10 @@ export const useStandbyRuntimePolling = () => {
       // Standby logs are always v4 structured entries (never v3 string format).
       const minId = plcLogsLastId !== null ? plcLogsLastId + 1 : undefined
 
-      const [statusResult, logsResult] = await Promise.all([
+      const [statusResult, logsResult, nodeInfoResult] = await Promise.all([
         window.bridge.runtimeGetStatus(currentIpAddress, currentJwtToken, includeTimingStatsInPolling),
         window.bridge.runtimeGetLogs(currentIpAddress, currentJwtToken, minId),
+        window.bridge.runtimeGetNodeInfo(currentIpAddress, currentJwtToken, 'system,network'),
       ])
 
       if (statusResult.success && statusResult.status) {
@@ -102,6 +106,10 @@ export const useStandbyRuntimePolling = () => {
       } else {
         handlePollFailure()
         return
+      }
+
+      if (nodeInfoResult.success && nodeInfoResult.nodeInfo) {
+        setStandbyNodeInfo(nodeInfoResult.nodeInfo)
       }
 
       if (logsResult.success && logsResult.logs !== undefined) {
@@ -137,7 +145,7 @@ export const useStandbyRuntimePolling = () => {
     } finally {
       isPollingRef.current = false
     }
-  }, [clearConnectionState, setStandbyPlcRuntimeStatus, setStandbyTimingStats])
+  }, [clearConnectionState, setStandbyPlcRuntimeStatus, setStandbyNodeInfo, setStandbyTimingStats])
 
   useEffect(() => {
     if (connectionStatus === 'connected' && jwtToken && standbyIpAddress) {

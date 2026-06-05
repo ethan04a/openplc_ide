@@ -46,6 +46,7 @@ const createDeviceSlice: StateCreator<DeviceSlice, [], [], DeviceSlice> = (setSt
     plcStatus: null,
     ipAddress: null,
     timingStats: null,
+    nodeInfo: null,
     plcLogs: [],
     plcLogsLastId: null,
   },
@@ -104,6 +105,7 @@ const createDeviceSlice: StateCreator<DeviceSlice, [], [], DeviceSlice> = (setSt
           standbyRuntimeConnection.plcStatus = null
           standbyRuntimeConnection.ipAddress = null
           standbyRuntimeConnection.timingStats = null
+          standbyRuntimeConnection.nodeInfo = null
           standbyRuntimeConnection.plcLogs = []
           standbyRuntimeConnection.plcLogsLastId = null
         }),
@@ -546,6 +548,13 @@ const createDeviceSlice: StateCreator<DeviceSlice, [], [], DeviceSlice> = (setSt
       setState(
         produce(({ runtimeConnection }: DeviceSlice) => {
           runtimeConnection.nodeInfo = nodeInfo
+        }),
+      )
+    },
+    setStandbyNodeInfo: (nodeInfo: RuntimeNodeInfo | null): void => {
+      setState(
+        produce(({ standbyRuntimeConnection }: DeviceSlice) => {
+          standbyRuntimeConnection.nodeInfo = nodeInfo
         }),
       )
     },

@@ -96,6 +96,7 @@ const standbyRuntimeConnectionSchema = z.object({
   plcStatus: z.enum(['INIT', 'RUNNING', 'STOPPED', 'ERROR', 'EMPTY', 'UNKNOWN']).nullable(),
   ipAddress: z.string().nullable(),
   timingStats: timingStatsSchema.nullable(),
+  nodeInfo: runtimeNodeInfoSchema.nullable(),
   plcLogs: z.array(
     z.object({
       id: z.number().nullable(),
@@ -254,6 +255,7 @@ const deviceActionSchema = z.object({
     .returns(z.void()),
   setTimingStats: z.function().args(timingStatsSchema.nullable()).returns(z.void()),
   setRuntimeNodeInfo: z.function().args(runtimeNodeInfoSchema.nullable()).returns(z.void()),
+  setStandbyNodeInfo: z.function().args(runtimeNodeInfoSchema.nullable()).returns(z.void()),
   setStandbyTimingStats: z.function().args(timingStatsSchema.nullable()).returns(z.void()),
   setIncludeTimingStatsInPolling: z.function().args(z.boolean()).returns(z.void()),
   setStandbyPlcLogs: z.function().args(z.array(z.custom<RuntimeLogEntry>())).returns(z.void()),
@@ -265,10 +267,11 @@ const deviceActionSchema = z.object({
 
 type DeviceActions = Omit<
   z.infer<typeof deviceActionSchema>,
-  'setTimingStats' | 'setStandbyTimingStats' | 'setRuntimeNodeInfo'
+  'setTimingStats' | 'setStandbyTimingStats' | 'setRuntimeNodeInfo' | 'setStandbyNodeInfo'
 > & {
   setTimingStats: (stats: TimingStats | null) => void
   setRuntimeNodeInfo: (nodeInfo: RuntimeNodeInfo | null) => void
+  setStandbyNodeInfo: (nodeInfo: RuntimeNodeInfo | null) => void
   setStandbyTimingStats: (stats: TimingStats | null) => void
   setIncludeTimingStatsInPolling: (include: boolean) => void
   setStandbyPlcLogs: (logs: RuntimeLogEntry[]) => void

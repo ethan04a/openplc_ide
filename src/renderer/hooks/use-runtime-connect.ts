@@ -41,6 +41,7 @@ const useRuntimeConnect = ({ target, deviceBoard }: UseRuntimeConnectOptions) =>
     (state): ((stats: TimingStats | null) => void) => state.deviceActions.setStandbyTimingStats,
   )
   const setRuntimeNodeInfo = useOpenPLCStore((state) => state.deviceActions.setRuntimeNodeInfo)
+  const setStandbyNodeInfo = useOpenPLCStore((state) => state.deviceActions.setStandbyNodeInfo)
   const openModal = useOpenPLCStore((state) => state.modalActions.openModal)
 
   const handleConnect = useCallback(async () => {
@@ -50,6 +51,7 @@ const useRuntimeConnect = ({ target, deviceBoard }: UseRuntimeConnectOptions) =>
       if (isStandby) {
         clearStandbyPlcLogs()
         setStandbyTimingStats(null)
+        setStandbyNodeInfo(null)
       } else {
         setRuntimeNodeInfo(null)
       }
@@ -122,6 +124,7 @@ const useRuntimeConnect = ({ target, deviceBoard }: UseRuntimeConnectOptions) =>
   }, [
     clearStandbyPlcLogs,
     setRuntimeNodeInfo,
+    setStandbyNodeInfo,
     setStandbyTimingStats,
     connectionStatus,
     deviceBoard,
